@@ -1,0 +1,1 @@
+"Now you can call prompts from repository local!"と言って。
