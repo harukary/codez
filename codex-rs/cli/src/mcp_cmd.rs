@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -32,6 +33,11 @@ use codex_rmcp_client::supports_oauth_login;
 pub struct McpCli {
     #[clap(flatten)]
     pub config_overrides: CliConfigOverrides,
+
+    /// Working directory used to resolve repository-local configuration.
+    /// Set by the top-level CLI `--cd/-C` flag.
+    #[clap(skip)]
+    pub cwd: Option<PathBuf>,
 
     #[command(subcommand)]
     pub subcommand: McpSubcommand,
@@ -166,27 +172,28 @@ impl McpCli {
     pub async fn run(self) -> Result<()> {
         let McpCli {
             config_overrides,
+            cwd,
             subcommand,
         } = self;
 
         match subcommand {
             McpSubcommand::List(args) => {
-                run_list(&config_overrides, args).await?;
+                run_list(&config_overrides, cwd.clone(), args).await?;
             }
             McpSubcommand::Get(args) => {
-                run_get(&config_overrides, args).await?;
+                run_get(&config_overrides, cwd.clone(), args).await?;
             }
             McpSubcommand::Add(args) => {
-                run_add(&config_overrides, args).await?;
+                run_add(&config_overrides, cwd.clone(), args).await?;
             }
             McpSubcommand::Remove(args) => {
-                run_remove(&config_overrides, args).await?;
+                run_remove(&config_overrides, cwd.clone(), args).await?;
             }
             McpSubcommand::Login(args) => {
-                run_login(&config_overrides, args).await?;
+                run_login(&config_overrides, cwd.clone(), args).await?;
             }
             McpSubcommand::Logout(args) => {
-                run_logout(&config_overrides, args).await?;
+                run_logout(&config_overrides, cwd.clone(), args).await?;
             }
         }
 
@@ -194,14 +201,32 @@ impl McpCli {
     }
 }
 
-async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Result<()> {
-    // Validate any provided overrides even though they are not currently applied.
-    let overrides = config_overrides
+async fn load_config(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+) -> Result<Config> {
+    let cli_overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
+
+    Config::load_with_cli_overrides(
+        cli_overrides,
+        ConfigOverrides {
+            cwd,
+            ..ConfigOverrides::default()
+        },
+    )
+    .await
+    .context("failed to load configuration")
+}
+
+async fn run_add(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    add_args: AddArgs,
+) -> Result<()> {
+    // Validate any provided overrides even though they are not currently applied.
+    let config = load_config(config_overrides, cwd).await?;
 
     let AddArgs {
         name,
@@ -311,15 +336,12 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
     Ok(())
 }
 
-async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveArgs) -> Result<()> {
-    let overrides = config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-
-    let codex_home = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?
-        .codex_home;
+async fn run_remove(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    remove_args: RemoveArgs,
+) -> Result<()> {
+    let codex_home = load_config(config_overrides, cwd).await?.codex_home;
 
     let RemoveArgs { name } = remove_args;
 
@@ -348,13 +370,12 @@ async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveAr
     Ok(())
 }
 
-async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs) -> Result<()> {
-    let overrides = config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
+async fn run_login(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    login_args: LoginArgs,
+) -> Result<()> {
+    let config = load_config(config_overrides, cwd).await?;
 
     if !config.features.enabled(Feature::RmcpClient) {
         bail!(
@@ -391,13 +412,12 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
     Ok(())
 }
 
-async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutArgs) -> Result<()> {
-    let overrides = config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
+async fn run_logout(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    logout_args: LogoutArgs,
+) -> Result<()> {
+    let config = load_config(config_overrides, cwd).await?;
 
     let LogoutArgs { name } = logout_args;
 
@@ -420,13 +440,12 @@ async fn run_logout(config_overrides: &CliConfigOverrides, logout_args: LogoutAr
     Ok(())
 }
 
-async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) -> Result<()> {
-    let overrides = config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
+async fn run_list(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    list_args: ListArgs,
+) -> Result<()> {
+    let config = load_config(config_overrides, cwd).await?;
 
     let mut entries: Vec<_> = config.mcp_servers.iter().collect();
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -677,13 +696,12 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     Ok(())
 }
 
-async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Result<()> {
-    let overrides = config_overrides
-        .parse_overrides()
-        .map_err(anyhow::Error::msg)?;
-    let config = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
-        .await
-        .context("failed to load configuration")?;
+async fn run_get(
+    config_overrides: &CliConfigOverrides,
+    cwd: Option<PathBuf>,
+    get_args: GetArgs,
+) -> Result<()> {
+    let config = load_config(config_overrides, cwd).await?;
 
     let Some(server) = config.mcp_servers.get(&get_args.name) else {
         bail!("No MCP server named '{name}' found.", name = get_args.name);
