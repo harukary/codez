@@ -19,4 +19,5 @@
 本家との差分機能のリスト。
 
 - **カスタムプロンプト探索ルートの拡張**: 「リポジトリ内 `.codex/prompts`」と「`$CODEX_HOME/prompts`」を探索し、同名はリポジトリ側が優先
+- **ローカル config.toml 優先**: Git リポジトリ直下に`.codex/config.toml`がある場合はそれを採用し、`~/.codex/config.toml`とはマージせず置き換え
 

@@ -38,8 +38,8 @@ use crate::mcp_cmd::McpCli;
 
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
+use codex_core::config::resolve_config_base_dir_from_cwd;
 use codex_core::features::Feature;
 use codex_core::features::FeatureOverrides;
 use codex_core::features::Features;
@@ -682,7 +682,7 @@ async fn is_tui2_enabled(cli: &TuiCli) -> std::io::Result<bool> {
         .parse_overrides()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
-    let codex_home = find_codex_home()?;
+    let codex_home = resolve_config_base_dir_from_cwd(cli.cwd.clone())?;
     let config_toml = load_config_as_toml_with_cli_overrides(&codex_home, cli_kv_overrides).await?;
     let config_profile = config_toml.get_config_profile(cli.config_profile.clone())?;
     let overrides = FeatureOverrides::default();

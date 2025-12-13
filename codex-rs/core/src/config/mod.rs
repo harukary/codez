@@ -69,6 +69,7 @@ const OPENAI_DEFAULT_REVIEW_MODEL: &str = "gpt-5.1-codex-max";
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
+const CODEX_DIR: &str = ".codex";
 
 #[cfg(test)]
 pub(crate) fn test_config() -> Config {
@@ -300,7 +301,7 @@ impl Config {
         cli_overrides: Vec<(String, TomlValue)>,
         overrides: ConfigOverrides,
     ) -> std::io::Result<Self> {
-        let codex_home = find_codex_home()?;
+        let codex_home = resolve_config_base_dir_from_cwd(overrides.cwd.clone())?;
 
         let root_value = load_resolved_config(
             &codex_home,
@@ -365,6 +366,75 @@ fn apply_overlays(
     }
 
     base
+}
+
+pub fn resolve_config_base_dir_from_cwd(cwd: Option<PathBuf>) -> std::io::Result<PathBuf> {
+    let resolved_cwd = resolve_cwd(cwd, false)?;
+    resolve_config_base_dir(&resolved_cwd)
+}
+
+fn resolve_config_base_dir(resolved_cwd: &Path) -> std::io::Result<PathBuf> {
+    if let Some(repo_codex) = resolve_repo_codex_dir(resolved_cwd)
+        && repo_codex.join(CONFIG_TOML_FILE).is_file() {
+            tracing::info!(
+                "using repository config: {}",
+                repo_codex.join(CONFIG_TOML_FILE).display()
+            );
+            return Ok(repo_codex);
+        }
+
+    find_codex_home()
+}
+
+fn resolve_repo_codex_dir(resolved_cwd: &Path) -> Option<PathBuf> {
+    resolve_root_git_project_for_trust(resolved_cwd).map(|repo_root| repo_root.join(CODEX_DIR))
+}
+
+pub fn resolve_execpolicy_base_dir(codex_home: &Path) -> std::io::Result<PathBuf> {
+    let rules_dir = codex_home.join("rules");
+    if has_execpolicy_rules(&rules_dir)? {
+        return Ok(codex_home.to_path_buf());
+    }
+
+    find_codex_home()
+}
+
+pub fn resolve_dotenv_base_dir(codex_home: &Path) -> std::io::Result<PathBuf> {
+    if codex_home.join(".env").is_file() {
+        return Ok(codex_home.to_path_buf());
+    }
+
+    find_codex_home()
+}
+
+fn has_execpolicy_rules(rules_dir: &Path) -> std::io::Result<bool> {
+    match std::fs::read_dir(rules_dir) {
+        Ok(mut entries) => Ok(entries.next().is_some()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+fn resolve_cwd(cwd: Option<PathBuf>, log: bool) -> std::io::Result<PathBuf> {
+    use std::env;
+
+    match cwd {
+        None => {
+            if log {
+                tracing::info!("cwd not set, using current dir");
+            }
+            env::current_dir()
+        }
+        Some(p) if p.is_absolute() => Ok(p),
+        Some(p) => {
+            if log {
+                tracing::info!("cwd is relative, resolving against current dir");
+            }
+            let mut current = env::current_dir()?;
+            current.push(p);
+            Ok(current)
+        }
+    }
 }
 
 fn deserialize_config_toml_with_base(
@@ -1017,24 +1087,7 @@ impl Config {
             crate::safety::set_windows_sandbox_enabled(features.enabled(Feature::WindowsSandbox));
         }
 
-        let resolved_cwd = {
-            use std::env;
-
-            match cwd {
-                None => {
-                    tracing::info!("cwd not set, using current dir");
-                    env::current_dir()?
-                }
-                Some(p) if p.is_absolute() => p,
-                Some(p) => {
-                    // Resolve relative path against the current working directory.
-                    tracing::info!("cwd is relative, resolving against current dir");
-                    let mut current = env::current_dir()?;
-                    current.push(p);
-                    current
-                }
-            }
-        };
+        let resolved_cwd = resolve_cwd(cwd, true)?;
         let additional_writable_roots: Vec<PathBuf> = additional_writable_roots
             .into_iter()
             .map(|path| {
@@ -1368,13 +1421,50 @@ mod tests {
     use crate::config::types::HistoryPersistence;
     use crate::config::types::McpServerTransportConfig;
     use crate::config::types::Notifications;
+    use crate::exec_policy::load_exec_policy;
     use crate::features::Feature;
 
     use super::*;
+    use codex_execpolicy::Decision;
     use pretty_assertions::assert_eq;
 
+    use serial_test::serial;
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
     use std::time::Duration;
     use tempfile::TempDir;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let original = std::env::var(key).ok();
+            // SAFETY: tests adjust process-scoped environment variables in isolation.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.original.take() {
+                // SAFETY: tests adjust process-scoped environment variables in isolation.
+                unsafe {
+                    std::env::set_var(self.key, value);
+                }
+            } else {
+                unsafe {
+                    std::env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_toml_parsing() {
@@ -1878,6 +1968,148 @@ trust_level = "trusted"
             final_config.mcp_oauth_credentials_store_mode,
             OAuthCredentialsStoreMode::Keyring,
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn resolves_repo_local_config_toml_when_present() -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_root = tmp.path().join("repo");
+        fs::create_dir_all(&repo_root)?;
+        let status = Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()?;
+        assert!(status.success());
+
+        let nested_cwd = repo_root.join("nested/worktree");
+        fs::create_dir_all(&nested_cwd)?;
+
+        let repo_codex = repo_root.join(CODEX_DIR);
+        fs::create_dir_all(&repo_codex)?;
+        let repo_config = repo_codex.join(CONFIG_TOML_FILE);
+        fs::write(&repo_config, "model = \"repo-model\"\n")?;
+
+        let codex_home = tmp.path().join("home");
+        fs::create_dir_all(&codex_home)?;
+        fs::write(
+            codex_home.join(CONFIG_TOML_FILE),
+            "model = \"home-model\"\n",
+        )?;
+        let _guard = EnvVarGuard::set("CODEX_HOME", &codex_home);
+
+        let config = Config::load_with_cli_overrides(
+            Vec::new(),
+            ConfigOverrides {
+                cwd: Some(nested_cwd),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let expected_repo_codex = fs::canonicalize(&repo_codex).unwrap_or(repo_codex);
+        assert_eq!(config.codex_home, expected_repo_codex);
+        assert_eq!(config.model.as_deref(), Some("repo-model"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn falls_back_to_home_config_when_repo_missing_config_toml() -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_root = tmp.path().join("repo");
+        fs::create_dir_all(&repo_root)?;
+        let status = Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()?;
+        assert!(status.success());
+
+        let nested_cwd = repo_root.join("nested");
+        fs::create_dir_all(&nested_cwd)?;
+
+        let codex_home = tmp.path().join("home");
+        fs::create_dir_all(&codex_home)?;
+        fs::write(
+            codex_home.join(CONFIG_TOML_FILE),
+            "model = \"home-model\"\n",
+        )?;
+        let _guard = EnvVarGuard::set("CODEX_HOME", &codex_home);
+
+        let config = Config::load_with_cli_overrides(
+            Vec::new(),
+            ConfigOverrides {
+                cwd: Some(nested_cwd),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let expected_home = fs::canonicalize(&codex_home)?;
+        assert_eq!(config.codex_home, expected_home);
+        assert_eq!(config.model.as_deref(), Some("home-model"));
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_dotenv_base_dir_prefers_home_when_repo_missing_env() -> std::io::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_codex = tmp.path().join("repo").join(CODEX_DIR);
+        fs::create_dir_all(&repo_codex)?;
+        fs::write(
+            repo_codex.join(CONFIG_TOML_FILE),
+            "model = \"repo-model\"\n",
+        )?;
+
+        let home_codex = tmp.path().join("home");
+        fs::create_dir_all(&home_codex)?;
+        fs::write(home_codex.join(".env"), "FOO=bar\n")?;
+        let _guard = EnvVarGuard::set("CODEX_HOME", &home_codex);
+
+        let resolved = resolve_dotenv_base_dir(&repo_codex)?;
+        let expected_home = fs::canonicalize(&home_codex)?;
+        assert_eq!(resolved, expected_home);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn resolve_execpolicy_base_dir_prefers_home_rules_when_repo_missing() -> anyhow::Result<()>
+    {
+        let tmp = TempDir::new()?;
+        let repo_codex = tmp.path().join("repo").join(CODEX_DIR);
+        fs::create_dir_all(&repo_codex)?;
+        fs::write(
+            repo_codex.join(CONFIG_TOML_FILE),
+            "model = \"repo-model\"\n",
+        )?;
+
+        let home_codex = tmp.path().join("home");
+        let home_rules = home_codex.join("rules");
+        fs::create_dir_all(&home_rules)?;
+        fs::write(
+            home_rules.join("default.rules"),
+            r#"prefix_rule(pattern=["custom"], decision="allow")"#,
+        )?;
+        let _guard = EnvVarGuard::set("CODEX_HOME", &home_codex);
+
+        let resolved = resolve_execpolicy_base_dir(&repo_codex)?;
+        let expected_home = fs::canonicalize(&home_codex)?;
+        assert_eq!(resolved, expected_home);
+
+        let policy = load_exec_policy(&repo_codex).await?;
+        let evaluation = policy.check(&["custom".to_string()], &|_| Decision::Prompt);
+        assert_eq!(evaluation.decision, Decision::Allow);
 
         Ok(())
     }

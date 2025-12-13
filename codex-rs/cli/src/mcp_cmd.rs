@@ -10,7 +10,6 @@ use codex_common::format_env_display::format_env_display;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::edit::ConfigEditsBuilder;
-use codex_core::config::find_codex_home;
 use codex_core::config::load_global_mcp_servers;
 use codex_core::config::types::McpServerConfig;
 use codex_core::config::types::McpServerTransportConfig;
@@ -211,7 +210,7 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 
     validate_server_name(&name)?;
 
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
+    let codex_home = config.codex_home.clone();
     let mut servers = load_global_mcp_servers(&codex_home)
         .await
         .with_context(|| format!("failed to load MCP servers from {}", codex_home.display()))?;
@@ -313,15 +312,19 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
 }
 
 async fn run_remove(config_overrides: &CliConfigOverrides, remove_args: RemoveArgs) -> Result<()> {
-    config_overrides
+    let overrides = config_overrides
         .parse_overrides()
         .map_err(anyhow::Error::msg)?;
+
+    let codex_home = Config::load_with_cli_overrides(overrides, ConfigOverrides::default())
+        .await
+        .context("failed to load configuration")?
+        .codex_home;
 
     let RemoveArgs { name } = remove_args;
 
     validate_server_name(&name)?;
 
-    let codex_home = find_codex_home().context("failed to resolve CODEX_HOME")?;
     let mut servers = load_global_mcp_servers(&codex_home)
         .await
         .with_context(|| format!("failed to load MCP servers from {}", codex_home.display()))?;

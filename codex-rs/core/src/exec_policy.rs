@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::command_safety::is_dangerous_command::requires_initial_appoval;
+use crate::config::resolve_execpolicy_base_dir;
 use codex_execpolicy::AmendError;
 use codex_execpolicy::Decision;
 use codex_execpolicy::Error as ExecPolicyRuleError;
@@ -60,6 +61,9 @@ pub enum ExecPolicyError {
         path: String,
         source: codex_execpolicy::Error,
     },
+
+    #[error("failed to resolve execpolicy directory: {source}")]
+    ResolveCodexHome { source: std::io::Error },
 }
 
 #[derive(Debug, Error)]
@@ -92,6 +96,8 @@ pub(crate) async fn load_exec_policy_for_features(
 }
 
 pub async fn load_exec_policy(codex_home: &Path) -> Result<Policy, ExecPolicyError> {
+    let codex_home = resolve_execpolicy_base_dir(codex_home)
+        .map_err(|source| ExecPolicyError::ResolveCodexHome { source })?;
     let policy_dir = codex_home.join(RULES_DIR_NAME);
     let policy_paths = collect_policy_files(&policy_dir).await?;
 

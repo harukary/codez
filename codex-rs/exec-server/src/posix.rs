@@ -61,7 +61,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use clap::Parser;
-use codex_core::config::find_codex_home;
+use codex_core::config::resolve_config_base_dir_from_cwd;
 use codex_core::is_dangerous_command::command_might_be_dangerous;
 use codex_core::sandboxing::SandboxPermissions;
 use codex_execpolicy::Decision;
@@ -229,7 +229,8 @@ fn format_program_name(path: &Path, preserve_program_paths: bool) -> Option<Stri
 }
 
 async fn load_exec_policy() -> anyhow::Result<Policy> {
-    let codex_home = find_codex_home().context("failed to resolve codex_home for execpolicy")?;
+    let codex_home = resolve_config_base_dir_from_cwd(None)
+        .context("failed to resolve codex_home for execpolicy")?;
     codex_core::load_exec_policy(&codex_home)
         .await
         .map_err(anyhow::Error::from)

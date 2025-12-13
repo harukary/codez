@@ -913,6 +913,7 @@ dependencies = [
  "codex-core",
  "codex-linux-sandbox",
  "dotenvy",
+ "serial_test",
  "tempfile",
  "tokio",
 ]

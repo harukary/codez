@@ -219,7 +219,7 @@ async fn exec_windows_sandbox(
     params: ExecParams,
     sandbox_policy: &SandboxPolicy,
 ) -> Result<RawExecToolCallOutput> {
-    use crate::config::find_codex_home;
+    use crate::config::resolve_config_base_dir_from_cwd;
     use codex_windows_sandbox::run_windows_sandbox_capture;
 
     let ExecParams {
@@ -239,7 +239,7 @@ async fn exec_windows_sandbox(
         )))
     })?;
     let sandbox_cwd = cwd.clone();
-    let codex_home = find_codex_home().map_err(|err| {
+    let codex_home = resolve_config_base_dir_from_cwd(None).map_err(|err| {
         CodexErr::Io(io::Error::other(format!(
             "windows sandbox: failed to resolve codex_home: {err}"
         )))

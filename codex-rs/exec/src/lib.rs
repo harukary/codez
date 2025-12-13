@@ -23,8 +23,8 @@ use codex_core::OLLAMA_OSS_PROVIDER_ID;
 use codex_core::auth::enforce_login_restrictions;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
+use codex_core::config::resolve_config_base_dir_from_cwd;
 use codex_core::config::resolve_oss_provider;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::protocol::AskForApproval;
@@ -136,7 +136,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     // we load config.toml here to determine project state.
     #[allow(clippy::print_stderr)]
     let config_toml = {
-        let codex_home = match find_codex_home() {
+        let codex_home = match resolve_config_base_dir_from_cwd(cwd.clone()) {
             Ok(codex_home) => codex_home,
             Err(err) => {
                 eprintln!("Error finding codex home: {err}");

@@ -16,8 +16,8 @@ use codex_core::RolloutRecorder;
 use codex_core::auth::enforce_login_restrictions;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
-use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
+use codex_core::config::resolve_config_base_dir_from_cwd;
 use codex_core::config::resolve_oss_provider;
 use codex_core::find_conversation_path_by_id_str;
 use codex_core::get_platform_sandbox;
@@ -146,7 +146,7 @@ pub async fn run_main(
 
     // we load config.toml here to determine project state.
     #[allow(clippy::print_stderr)]
-    let codex_home = match find_codex_home() {
+    let codex_home = match resolve_config_base_dir_from_cwd(cli.cwd.clone()) {
         Ok(codex_home) => codex_home.to_path_buf(),
         Err(err) => {
             eprintln!("Error finding codex home: {err}");

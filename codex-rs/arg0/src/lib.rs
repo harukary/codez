@@ -114,7 +114,8 @@ const ILLEGAL_ENV_VAR_PREFIX: &str = "CODEX_";
 /// Security: Do not allow `.env` files to create or modify any variables
 /// with names starting with `CODEX_`.
 fn load_dotenv() {
-    if let Ok(codex_home) = codex_core::config::find_codex_home()
+    if let Ok(config_base) = codex_core::config::resolve_config_base_dir_from_cwd(None)
+        && let Ok(codex_home) = codex_core::config::resolve_dotenv_base_dir(&config_base)
         && let Ok(iter) = dotenvy::from_path_iter(codex_home.join(".env"))
     {
         set_filtered(iter);
@@ -202,4 +203,79 @@ pub fn prepend_path_entry_for_codex_aliases() -> std::io::Result<TempDir> {
     }
 
     Ok(temp_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::env;
+    use std::path::Path;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    struct EnvGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let original = env::var(key).ok();
+            unsafe { env::set_var(key, value) };
+            Self { key, original }
+        }
+
+        fn capture(key: &'static str) -> Self {
+            let original = env::var(key).ok();
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => unsafe { env::set_var(self.key, value) },
+                None => unsafe { env::remove_var(self.key) },
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn load_dotenv_falls_back_to_home_env_when_repo_missing_file() -> anyhow::Result<()> {
+        let tmp = TempDir::new()?;
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root)?;
+        let status = Command::new("git")
+            .args(["init"])
+            .current_dir(&repo_root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()?;
+        assert!(status.success());
+
+        let repo_codex = repo_root.join(".codex");
+        std::fs::create_dir_all(&repo_codex)?;
+        std::fs::write(repo_codex.join("config.toml"), "model = \"repo\"\n")?;
+
+        let nested_worktree = repo_root.join("nested");
+        std::fs::create_dir_all(&nested_worktree)?;
+
+        let home_codex = tmp.path().join("home");
+        std::fs::create_dir_all(&home_codex)?;
+        std::fs::write(home_codex.join(".env"), "FALLBACK_ENV=value\n")?;
+
+        let _home_guard = EnvGuard::set_path("CODEX_HOME", &home_codex);
+        let _env_guard = EnvGuard::capture("FALLBACK_ENV");
+
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(&nested_worktree)?;
+        load_dotenv();
+        env::set_current_dir(original_dir)?;
+
+        assert_eq!(env::var("FALLBACK_ENV")?, "value");
+
+        Ok(())
+    }
 }
