@@ -1,0 +1,6 @@
+component,name,where_used,variants,states,notes
+button,PrimaryButton,ScreenA|ScreenB|ScreenC,primary|secondary|tertiary|destructive,default|pressed|focus|disabled|loading,統一ルールとトークン参照を確認
+textfield,TextField,ScreenA|ScreenD,default|withIcon|withPrefixSuffix,default|focus|error|disabled,ラベル常時表示とエラー関連付け
+dialog,ConfirmDialog,ScreenB|ScreenE,default|destructive,default|loading,危険操作は文言とボタン優先度を要確認
+toast,Toast,Global,info|success|warning|danger,default,読み上げと表示時間
+table,DataTable,AdminScreens,default|compact,loading|empty|error,密度と列の整列ルール

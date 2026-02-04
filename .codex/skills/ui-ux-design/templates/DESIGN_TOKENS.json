@@ -1,0 +1,77 @@
+{
+  "color": {
+    "brand": {
+      "primary": "#2563EB",
+      "secondary": "#7C3AED"
+    },
+    "text": {
+      "primary": "#111827",
+      "secondary": "#374151",
+      "disabled": "#9CA3AF",
+      "inverse": "#F9FAFB"
+    },
+    "surface": {
+      "background": "#FFFFFF",
+      "raised": "#F9FAFB",
+      "overlay": "#111827"
+    },
+    "border": {
+      "default": "#D1D5DB",
+      "focus": "#2563EB",
+      "divider": "#E5E7EB"
+    },
+    "semantic": {
+      "success": "#16A34A",
+      "warning": "#D97706",
+      "danger": "#DC2626",
+      "info": "#0284C7"
+    }
+  },
+  "typography": {
+    "fontFamily": {
+      "base": "system-ui",
+      "mono": "ui-monospace"
+    },
+    "scale": {
+      "xs": { "fontSize": 12, "lineHeight": 16, "fontWeight": 400 },
+      "sm": { "fontSize": 14, "lineHeight": 20, "fontWeight": 400 },
+      "md": { "fontSize": 16, "lineHeight": 24, "fontWeight": 400 },
+      "lg": { "fontSize": 18, "lineHeight": 28, "fontWeight": 500 },
+      "xl": { "fontSize": 24, "lineHeight": 32, "fontWeight": 600 },
+      "2xl": { "fontSize": 32, "lineHeight": 40, "fontWeight": 700 }
+    }
+  },
+  "spacing": {
+    "unit": 4,
+    "scale": {
+      "1": 4,
+      "2": 8,
+      "3": 12,
+      "4": 16,
+      "5": 20,
+      "6": 24,
+      "8": 32,
+      "10": 40,
+      "12": 48,
+      "16": 64
+    }
+  },
+  "radius": {
+    "sm": 6,
+    "md": 10,
+    "lg": 14
+  },
+  "elevation": {
+    "raised": { "x": 0, "y": 4, "blur": 12, "spread": 0, "opacity": 0.12 }
+  },
+  "motion": {
+    "duration": {
+      "fast": 120,
+      "normal": 200,
+      "slow": 320
+    },
+    "easing": {
+      "standard": "cubic-bezier(0.2, 0, 0, 1)"
+    }
+  }
+}
