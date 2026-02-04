@@ -4,6 +4,13 @@
 
 ## Unreleased
 
+- **Slash Commands**
+  - `/apps` を追加（app 一覧から選択して `$<slug>` を入力欄へ挿入）
+  - `/personality` を追加（friendly/pragmatic を選択して、以降のターンの personality を上書き）
+  - `/collab` を追加（collaboration mode preset を選択。入力欄で Shift+Tab でも cycle）
+- **Sessions / History**
+  - `/resume` の履歴ピッカーに `archived` / `sortKey` / `sourceKinds` フィルタを追加
+  - archived スレッドを選んだ場合、復元前に `thread/unarchive` を実行
 - **Sessions / Tabs**
   - セッションタブを backendId（opencode / codez）でフィルタリング。アクティブセッションと同じ backend のセッションのみ表示されるように変更
   - セッション番号付けを Sessions ツリーと一致（ワークスペース+backend 単位の連番）
@@ -142,12 +149,8 @@
 - **MCP**
   - セッション開始時の `MCP servers` 表示が他プロジェクトと混ざることがある問題を修正
     - セッションの `cwd` に対して `mcpServerStatus/list` を問い合わせ、設定上有効な MCP のみを表示
-- **AskUserQuestion**
-  - AskUserQuestion（`ask_user_question` tool）の UI をサポート（デフォルト無効。`config.toml` で明示的に有効化した場合のみモデルへ露出）
-    - 推奨: `[features].ask_user_question_tool = true`（互換: `[tools].ask_user_question = true`）
-    - 質問カードの表示と回答の送信
-    - 選択肢（options）のクリック選択
-    - 回答（answers）をチャット履歴に保持
+- **Tools**
+  - AskUserQuestion（`user/askQuestion` / `ask_user_question`）のサポートを削除。ユーザーへの質問は `request_user_input` に統一
 - **Webview / Performance**
   - Webview が非表示の間は state 更新を送らず、ACK 待ちもしない（表示に戻ったら `refresh` で追いつく）
   - state 更新 ACK のタイムアウトは UI エラー扱いせず、デバッグログに出す

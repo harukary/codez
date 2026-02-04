@@ -22,10 +22,16 @@ import type { ModelListParams } from "../generated/v2/ModelListParams";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
 import type { ThreadArchiveParams } from "../generated/v2/ThreadArchiveParams";
 import type { ThreadArchiveResponse } from "../generated/v2/ThreadArchiveResponse";
+import type { ThreadUnarchiveParams } from "../generated/v2/ThreadUnarchiveParams";
+import type { ThreadUnarchiveResponse } from "../generated/v2/ThreadUnarchiveResponse";
 import type { ThreadRollbackParams } from "../generated/v2/ThreadRollbackParams";
 import type { ThreadRollbackResponse } from "../generated/v2/ThreadRollbackResponse";
 import type { ThreadListParams } from "../generated/v2/ThreadListParams";
 import type { ThreadListResponse } from "../generated/v2/ThreadListResponse";
+import type { AppsListParams } from "../generated/v2/AppsListParams";
+import type { AppsListResponse } from "../generated/v2/AppsListResponse";
+import type { CollaborationModeListParams } from "../generated/v2/CollaborationModeListParams";
+import type { CollaborationModeListResponse } from "../generated/v2/CollaborationModeListResponse";
 import type { ListMcpServerStatusParams } from "../generated/v2/ListMcpServerStatusParams";
 import type { ListMcpServerStatusResponse } from "../generated/v2/ListMcpServerStatusResponse";
 import type { GetAccountParams } from "../generated/v2/GetAccountParams";
@@ -37,10 +43,11 @@ import type { ListAccountsResponse } from "../generated/v2/ListAccountsResponse"
 import type { LogoutAccountResponse } from "../generated/v2/LogoutAccountResponse";
 import type { SwitchAccountParams } from "../generated/v2/SwitchAccountParams";
 import type { SwitchAccountResponse } from "../generated/v2/SwitchAccountResponse";
-import type { ApprovalDecision } from "../generated/v2/ApprovalDecision";
+import type { CommandExecutionApprovalDecision } from "../generated/v2/CommandExecutionApprovalDecision";
+import type { FileChangeApprovalDecision } from "../generated/v2/FileChangeApprovalDecision";
 import type { CommandExecutionRequestApprovalResponse } from "../generated/v2/CommandExecutionRequestApprovalResponse";
 import type { FileChangeRequestApprovalResponse } from "../generated/v2/FileChangeRequestApprovalResponse";
-import type { AskUserQuestionResponse } from "../generated/v2/AskUserQuestionResponse";
+import type { ToolRequestUserInputResponse } from "../generated/v2/ToolRequestUserInputResponse";
 import type { FuzzyFileSearchParams } from "../generated/FuzzyFileSearchParams";
 import type { FuzzyFileSearchResponse } from "../generated/FuzzyFileSearchResponse";
 import type { ApplyPatchApprovalResponse } from "../generated/ApplyPatchApprovalResponse";
@@ -48,6 +55,7 @@ import type { ExecCommandApprovalResponse } from "../generated/ExecCommandApprov
 import type { ReviewDecision } from "../generated/ReviewDecision";
 import { RpcClient } from "./rpc";
 import type { AnyServerNotification } from "./types";
+import { promptRequestUserInput } from "./request_user_input";
 
 type SpawnOptions = {
   command: string;
@@ -68,10 +76,7 @@ export class BackendProcess implements vscode.Disposable {
 
   public onNotification: ((n: AnyServerNotification) => void) | null = null;
   public onApprovalRequest:
-    | ((req: V2ApprovalRequest) => Promise<ApprovalDecision>)
-    | null = null;
-  public onAskUserQuestionRequest:
-    | ((req: V2AskUserQuestionRequest) => Promise<AskUserQuestionResponse>)
+    | ((req: V2ApprovalRequest) => Promise<V2ApprovalDecision>)
     | null = null;
 
   private constructor(
@@ -181,6 +186,15 @@ export class BackendProcess implements vscode.Disposable {
     });
   }
 
+  public async threadUnarchive(
+    params: ThreadUnarchiveParams,
+  ): Promise<ThreadUnarchiveResponse> {
+    return this.rpc.request<ThreadUnarchiveResponse>({
+      method: "thread/unarchive",
+      params,
+    });
+  }
+
   public async threadCompact(
     params: ThreadCompactParams,
   ): Promise<ThreadCompactResponse> {
@@ -209,10 +223,33 @@ export class BackendProcess implements vscode.Disposable {
         limit: params?.limit ?? null,
         sortKey: params?.sortKey ?? null,
         modelProviders: params?.modelProviders ?? null,
+        sourceKinds: params?.sourceKinds ?? null,
         archived: params?.archived ?? null,
       },
     };
     return this.rpc.request<ThreadListResponse>(request);
+  }
+
+  public async appsList(
+    params: Partial<AppsListParams> | undefined = undefined,
+  ): Promise<AppsListResponse> {
+    const request: { method: "app/list"; params: AppsListParams } = {
+      method: "app/list",
+      params: {
+        cursor: params?.cursor ?? null,
+        limit: params?.limit ?? null,
+      },
+    };
+    return this.rpc.request<AppsListResponse>(request);
+  }
+
+  public async collaborationModeList(
+    params: CollaborationModeListParams,
+  ): Promise<CollaborationModeListResponse> {
+    return this.rpc.request<CollaborationModeListResponse>({
+      method: "collaborationMode/list",
+      params,
+    });
   }
 
   public async mcpServerStatusList(
@@ -345,7 +382,7 @@ export class BackendProcess implements vscode.Disposable {
     if (isV2ApprovalRequest(req) && this.onApprovalRequest) {
       try {
         const decision = await this.onApprovalRequest(req);
-        this.respondV2Approval(req.id, decision);
+        this.respondV2Approval(req, decision);
         return;
       } catch (err) {
         this.output.appendLine(
@@ -354,39 +391,47 @@ export class BackendProcess implements vscode.Disposable {
       }
     }
 
-    if (isAskUserQuestionRequest(req) && this.onAskUserQuestionRequest) {
-      try {
-        const result = await this.onAskUserQuestionRequest(req);
-        this.respondAskUserQuestion(req.id, result);
-        return;
-      } catch (err) {
-        this.output.appendLine(
-          `Failed to handle ask-question request via UI, cancelling: ${String(err)}`,
-        );
-        this.respondAskUserQuestion(req.id, { cancelled: true, answers: {} });
-        return;
+    if (isV2ToolRequestUserInputRequest(req)) {
+      const questions = req.params.questions.map((q) => ({
+        id: q.id,
+        header: q.header,
+        question: q.question,
+        // Protocol currently doesn't expose an allowMultiple flag; default to single-select.
+        allowMultiple: false,
+        isOther: Boolean((q as any).isOther),
+        isSecret: Boolean((q as any).isSecret),
+        options: Array.isArray(q.options)
+          ? q.options.map((o) => ({
+              label: o.label,
+              description: o.description,
+            }))
+          : null,
+      }));
+
+      const { answersById } = await promptRequestUserInput({
+        title: "Codex: request_user_input",
+        questions,
+      });
+
+      const answers: ToolRequestUserInputResponse["answers"] = {};
+      for (const q of req.params.questions) {
+        answers[q.id] = { answers: answersById[q.id] ?? [] };
       }
+      this.respondV2ToolRequestUserInput(req.id, { answers });
+      return;
     }
 
     if (this.approvalsDefaultDecision !== "prompt") {
       if (isV2ApprovalRequest(req)) {
         const decision =
           this.approvalsDefaultDecision === "decline" ? "decline" : "cancel";
-        this.respondV2Approval(req.id, decision);
+        this.respondV2Approval(req, decision);
         return;
       }
 
       const decision =
         this.approvalsDefaultDecision === "decline" ? "denied" : "abort";
       this.respondV1Approval(req.id, decision);
-      return;
-    }
-
-    if (isAskUserQuestionRequest(req)) {
-      void vscode.window.showWarningMessage(
-        "Codex asked a question, but no UI handler is registered. Cancelling.",
-      );
-      this.respondAskUserQuestion(req.id, { cancelled: true, answers: {} });
       return;
     }
 
@@ -403,37 +448,54 @@ export class BackendProcess implements vscode.Disposable {
     );
 
     if (choice === "Accept") {
-      if (isV2ApprovalRequest(req)) this.respondV2Approval(req.id, "accept");
+      if (isV2ApprovalRequest(req)) this.respondV2Approval(req, "accept");
       else this.respondV1Approval(req.id, "approved");
       return;
     }
     if (choice === "Accept (For Session)") {
       if (isV2ApprovalRequest(req)) {
-        this.respondV2Approval(req.id, "acceptForSession");
+        this.respondV2Approval(req, "acceptForSession");
       } else {
         this.respondV1Approval(req.id, "approved_for_session");
       }
       return;
     }
     if (choice === "Decline") {
-      if (isV2ApprovalRequest(req)) this.respondV2Approval(req.id, "decline");
+      if (isV2ApprovalRequest(req)) this.respondV2Approval(req, "decline");
       else this.respondV1Approval(req.id, "denied");
       return;
     }
-    if (isV2ApprovalRequest(req)) this.respondV2Approval(req.id, "cancel");
+    if (isV2ApprovalRequest(req)) this.respondV2Approval(req, "cancel");
     else this.respondV1Approval(req.id, "abort");
   }
 
-  public respondV2Approval(id: RequestId, decision: ApprovalDecision): void {
-    const result:
-      | CommandExecutionRequestApprovalResponse
-      | FileChangeRequestApprovalResponse = { decision };
-    this.rpc.respond(id, result);
+  public respondV2Approval(
+    req: V2ApprovalRequest,
+    decision: V2ApprovalDecision,
+  ): void {
+    if (req.method === "item/commandExecution/requestApproval") {
+      const result: CommandExecutionRequestApprovalResponse = {
+        decision: decision as CommandExecutionApprovalDecision,
+      };
+      this.rpc.respond(req.id, result);
+      return;
+    }
+
+    if (typeof decision === "object" && decision !== null) {
+      throw new Error(
+        "File change approvals do not support acceptWithExecpolicyAmendment",
+      );
+    }
+
+    const result: FileChangeRequestApprovalResponse = {
+      decision: decision as FileChangeApprovalDecision,
+    };
+    this.rpc.respond(req.id, result);
   }
 
-  public respondAskUserQuestion(
+  public respondV2ToolRequestUserInput(
     id: RequestId,
-    result: AskUserQuestionResponse,
+    result: ToolRequestUserInputResponse,
   ): void {
     this.rpc.respond(id, result);
   }
@@ -455,11 +517,13 @@ type V2ApprovalRequest = Extract<
   }
 >;
 
-type V2AskUserQuestionRequest = Extract<
+type V2ApprovalDecision =
+  | CommandExecutionApprovalDecision
+  | FileChangeApprovalDecision;
+
+type V2ToolRequestUserInputRequest = Extract<
   ServerRequest,
-  {
-    method: "user/askQuestion";
-  }
+  { method: "item/tool/requestUserInput" }
 >;
 
 function isV2ApprovalRequest(req: ServerRequest): req is V2ApprovalRequest {
@@ -469,8 +533,8 @@ function isV2ApprovalRequest(req: ServerRequest): req is V2ApprovalRequest {
   );
 }
 
-function isAskUserQuestionRequest(
+function isV2ToolRequestUserInputRequest(
   req: ServerRequest,
-): req is V2AskUserQuestionRequest {
-  return req.method === "user/askQuestion";
+): req is V2ToolRequestUserInputRequest {
+  return req.method === "item/tool/requestUserInput";
 }

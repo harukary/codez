@@ -26,14 +26,16 @@ import {
   makeBackendInstanceKey,
   parseBackendInstanceKey,
 } from "./backend_instance_key";
-import type { ApprovalDecision } from "../generated/v2/ApprovalDecision";
-import type { AskUserQuestionResponse } from "../generated/v2/AskUserQuestionResponse";
+import type { CommandExecutionApprovalDecision } from "../generated/v2/CommandExecutionApprovalDecision";
+import type { FileChangeApprovalDecision } from "../generated/v2/FileChangeApprovalDecision";
 import type { ServerRequest } from "../generated/ServerRequest";
 import type { ThreadResumeResponse } from "../generated/v2/ThreadResumeResponse";
 import type { ThreadRollbackResponse } from "../generated/v2/ThreadRollbackResponse";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
 import type { Model } from "../generated/v2/Model";
 import type { ReasoningEffort } from "../generated/ReasoningEffort";
+import type { Personality } from "../generated/Personality";
+import type { CollaborationMode } from "../generated/CollaborationMode";
 import type { GetAccountResponse } from "../generated/v2/GetAccountResponse";
 import type { GetAccountRateLimitsResponse } from "../generated/v2/GetAccountRateLimitsResponse";
 import type { LoginAccountParams } from "../generated/v2/LoginAccountParams";
@@ -44,18 +46,25 @@ import type { SwitchAccountParams } from "../generated/v2/SwitchAccountParams";
 import type { SwitchAccountResponse } from "../generated/v2/SwitchAccountResponse";
 import type { SkillsListEntry } from "../generated/v2/SkillsListEntry";
 import type { Thread } from "../generated/v2/Thread";
+import type { ThreadSourceKind } from "../generated/v2/ThreadSourceKind";
 import type { Turn } from "../generated/v2/Turn";
+import type { AppInfo } from "../generated/v2/AppInfo";
+import type { AppsListResponse } from "../generated/v2/AppsListResponse";
+import type { CollaborationModeMask } from "../generated/CollaborationModeMask";
 import type { AnyServerNotification } from "./types";
 import type { FuzzyFileSearchResponse } from "../generated/FuzzyFileSearchResponse";
 import type { ListMcpServerStatusResponse } from "../generated/v2/ListMcpServerStatusResponse";
 import type { AskForApproval } from "../generated/v2/AskForApproval";
 import type { SandboxPolicy } from "../generated/v2/SandboxPolicy";
+import { promptRequestUserInput } from "./request_user_input";
 
 type ModelSettings = {
   model: string | null;
   provider: string | null;
   reasoning: string | null;
   agent?: string | null;
+  personality?: Personality | null;
+  collaborationMode?: CollaborationMode | null;
 };
 
 function imageMimeFromPath(filePath: string): string | null {
@@ -176,13 +185,10 @@ export class BackendManager implements vscode.Disposable {
       ) => void)
     | null = null;
   public onApprovalRequest:
-    | ((session: Session, req: V2ApprovalRequest) => Promise<ApprovalDecision>)
-    | null = null;
-  public onAskUserQuestionRequest:
     | ((
         session: Session,
-        req: V2AskUserQuestionRequest,
-      ) => Promise<AskUserQuestionResponse>)
+        req: V2ApprovalRequest,
+      ) => Promise<V2ApprovalDecision>)
     | null = null;
   public onServerEvent:
     | ((
@@ -511,8 +517,6 @@ export class BackendManager implements vscode.Disposable {
       proc.onNotification = (n) => this.onServerNotification(backendKey, n);
       proc.onApprovalRequest = async (req) =>
         this.handleApprovalRequest(backendKey, req);
-      proc.onAskUserQuestionRequest = async (req) =>
-        this.handleAskUserQuestionRequest(backendKey, req);
     })();
 
     this.startInFlight.set(
@@ -597,6 +601,9 @@ export class BackendManager implements vscode.Disposable {
         : null,
       baseInstructions: null,
       developerInstructions: null,
+      personality: modelSettings?.personality ?? null,
+      ephemeral: null,
+      dynamicTools: null,
       experimentalRawEvents: false,
     };
     const res = await proc.threadStart(params);
@@ -608,6 +615,8 @@ export class BackendManager implements vscode.Disposable {
       workspaceFolderUri: folder.uri.toString(),
       title: folder.name,
       threadId: res.thread.id,
+      personality: modelSettings?.personality ?? null,
+      collaborationModePresetName: null,
     };
     this.sessions.add(backendKey, session);
     this.output.appendLine(
@@ -806,6 +815,9 @@ export class BackendManager implements vscode.Disposable {
       cursor?: string | null;
       limit?: number | null;
       modelProviders?: string[] | null;
+      sortKey?: "created_at" | "updated_at" | null;
+      sourceKinds?: ThreadSourceKind[] | null;
+      archived?: boolean | null;
     },
   ): Promise<{ data: Thread[]; nextCursor: string | null }> {
     const backendKey = makeBackendInstanceKey(folder.uri.toString(), backendId);
@@ -830,7 +842,10 @@ export class BackendManager implements vscode.Disposable {
     const res = await proc.threadList({
       cursor: opts?.cursor ?? null,
       limit: opts?.limit ?? null,
+      sortKey: opts?.sortKey ?? null,
       modelProviders: opts?.modelProviders ?? null,
+      sourceKinds: opts?.sourceKinds ?? null,
+      archived: opts?.archived ?? null,
     });
     return { data: res.data ?? [], nextCursor: res.nextCursor ?? null };
   }
@@ -848,6 +863,64 @@ export class BackendManager implements vscode.Disposable {
       if (!cursor) break;
     }
     return out;
+  }
+
+  private async fetchAllApps(proc: BackendProcess): Promise<AppInfo[]> {
+    const out: AppInfo[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 10; i += 1) {
+      const res: AppsListResponse = await proc.appsList({
+        cursor,
+        limit: 200,
+      });
+      out.push(...(res.data ?? []));
+      cursor = res.nextCursor ?? null;
+      if (!cursor) break;
+    }
+    return out;
+  }
+
+  public async listAppsForSession(session: Session): Promise<AppInfo[]> {
+    if (session.backendId === "opencode") {
+      return [];
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    return await this.fetchAllApps(proc);
+  }
+
+  public async listCollaborationModePresetsForSession(
+    session: Session,
+  ): Promise<CollaborationModeMask[]> {
+    if (session.backendId === "opencode") {
+      return [];
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    const res = await proc.collaborationModeList({});
+    return res.data ?? [];
   }
 
   public async pickSession(
@@ -911,6 +984,7 @@ export class BackendManager implements vscode.Disposable {
       config: null,
       baseInstructions: null,
       developerInstructions: null,
+      personality: null,
     };
     return await proc.threadResume(params);
   }
@@ -971,6 +1045,7 @@ export class BackendManager implements vscode.Disposable {
         : null,
       baseInstructions: null,
       developerInstructions: null,
+      personality: null,
     };
     return await proc.threadResume(params);
   }
@@ -989,6 +1064,26 @@ export class BackendManager implements vscode.Disposable {
       throw new Error("Backend is not running for this workspace folder");
 
     await proc.threadArchive({ threadId: session.threadId });
+  }
+
+  public async unarchiveThreadForWorkspaceFolderAndBackendId(
+    folder: vscode.WorkspaceFolder,
+    backendId: BackendId,
+    threadId: string,
+  ): Promise<void> {
+    if (backendId === "opencode") {
+      throw new Error(
+        "thread/unarchive is not supported for opencode backend.",
+      );
+    }
+
+    const backendKey = makeBackendInstanceKey(folder.uri.toString(), backendId);
+    await this.startForBackendId(folder, backendId);
+    const proc = this.processes.get(backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    await proc.threadUnarchive({ threadId });
   }
 
   public async readAccount(session: Session): Promise<GetAccountResponse> {
@@ -1208,6 +1303,7 @@ export class BackendManager implements vscode.Disposable {
       { kind: "imageUrl"; url: string } | { kind: "localImage"; path: string }
     >,
     modelSettings: ModelSettings | null | undefined,
+    extraInput: UserInput[] = [],
   ): Promise<void> {
     const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
     if (!folder) {
@@ -1295,7 +1391,9 @@ export class BackendManager implements vscode.Disposable {
 
       const imageSuffix = images.length > 0 ? ` [images=${images.length}]` : "";
       const preview = trimmed ? trimmed : "(image only)";
-      this.output.appendLine(`\n>> (${session.title}) ${preview}${imageSuffix}`);
+      this.output.appendLine(
+        `\n>> (${session.title}) ${preview}${imageSuffix}`,
+      );
       this.output.append(`<< (${session.title}) `);
 
       try {
@@ -1356,6 +1454,7 @@ export class BackendManager implements vscode.Disposable {
 
     const input: UserInput[] = [];
     if (text.trim()) input.push({ type: "text", text, text_elements: [] });
+    input.push(...extraInput);
     for (const img of images) {
       if (!img) continue;
       if (img.kind === "imageUrl") {
@@ -1377,17 +1476,19 @@ export class BackendManager implements vscode.Disposable {
       throw new Error("Message must include text or images");
     }
     const effort = this.toReasoningEffort(modelSettings?.reasoning ?? null);
+    const collaborationMode = modelSettings?.collaborationMode ?? null;
     const params: TurnStartParams = {
       threadId: session.threadId,
       input,
       cwd: null,
       approvalPolicy: null,
       sandboxPolicy: null,
-      model: modelSettings?.model ?? null,
-      effort,
+      model: collaborationMode ? null : (modelSettings?.model ?? null),
+      effort: collaborationMode ? null : effort,
       summary: null,
+      personality: modelSettings?.personality ?? null,
       outputSchema: null,
-      collaborationMode: null,
+      collaborationMode,
     };
 
     const imageSuffix = images.length > 0 ? ` [images=${images.length}]` : "";
@@ -2684,77 +2785,38 @@ export class BackendManager implements vscode.Disposable {
     questions: OpencodeQuestionRequest["questions"];
     tool?: { messageID: string; callID: string };
   }): Promise<void> {
-    if (!this.onAskUserQuestionRequest) {
-      throw new Error("onAskUserQuestionRequest handler is not set");
-    }
+    const title =
+      args.questions[0] && typeof args.questions[0].header === "string"
+        ? args.questions[0].header
+        : "OpenCode question";
 
-    const callId = args.tool?.callID?.trim()
-      ? args.tool.callID
-      : args.requestID;
-    const request = {
-      title:
-        args.questions[0] && typeof args.questions[0].header === "string"
-          ? args.questions[0].header
-          : "OpenCode question",
-      questions: args.questions.map((q, idx) => {
-        const id = `${args.requestID}:${String(idx)}`;
-        const hasOptions = Array.isArray(q.options) && q.options.length > 0;
-        const type: "text" | "single_select" | "multi_select" = hasOptions
-          ? q.multiple
-            ? "multi_select"
-            : "single_select"
-          : "text";
-        return {
-          id,
-          prompt: q.question,
-          type,
-          description: null,
-          allowOther: q.custom === false ? false : true,
-          required: null,
-          placeholder: null,
-          options: hasOptions
-            ? q.options.map((o) => ({
-                label: o.label,
-                value: o.label,
-                description: o.description || null,
-                recommended: null,
-              }))
-            : null,
-        };
-      }),
-    };
+    const questions = args.questions.map((q, idx) => ({
+      id: `${args.requestID}:${String(idx)}`,
+      header: q.header ?? title,
+      question: q.question,
+      allowMultiple: Boolean(q.multiple),
+      isOther: q.custom === false ? false : true,
+      isSecret: false,
+      options:
+        Array.isArray(q.options) && q.options.length > 0
+          ? q.options.map((o) => ({
+              label: o.label,
+              description: o.description,
+            }))
+          : null,
+    }));
 
-    const fakeReq = {
-      method: "user/askQuestion",
-      id: 0,
-      params: {
-        threadId: args.sessionID,
-        turnId: args.turnId,
-        callId,
-        request,
-      },
-    } as any;
+    const { cancelled, answersById } = await promptRequestUserInput({
+      title,
+      questions,
+    });
 
-    const response = await this.onAskUserQuestionRequest(args.session, fakeReq);
-    if (response.cancelled) {
+    if (cancelled) {
       await args.client.rejectQuestion({ requestID: args.requestID });
       return;
     }
 
-    const answers: string[][] = [];
-    for (let i = 0; i < args.questions.length; i++) {
-      const qid = `${args.requestID}:${String(i)}`;
-      const v = (response.answers as any)?.[qid];
-      if (typeof v === "string") {
-        answers.push([v]);
-        continue;
-      }
-      if (Array.isArray(v)) {
-        answers.push(v.map((x) => String(x)));
-        continue;
-      }
-      answers.push([]);
-    }
+    const answers: string[][] = questions.map((q) => answersById[q.id] ?? []);
     await args.client.replyQuestion({ requestID: args.requestID, answers });
   }
 
@@ -3038,7 +3100,7 @@ export class BackendManager implements vscode.Disposable {
   private async handleApprovalRequest(
     backendKey: string,
     req: V2ApprovalRequest,
-  ): Promise<ApprovalDecision> {
+  ): Promise<V2ApprovalDecision> {
     const session = this.sessions.getByThreadId(
       backendKey,
       req.params.threadId,
@@ -3052,25 +3114,6 @@ export class BackendManager implements vscode.Disposable {
       throw new Error("onApprovalRequest handler is not set");
     }
     return this.onApprovalRequest(session, req);
-  }
-
-  private async handleAskUserQuestionRequest(
-    backendKey: string,
-    req: V2AskUserQuestionRequest,
-  ): Promise<AskUserQuestionResponse> {
-    const session = this.sessions.getByThreadId(
-      backendKey,
-      req.params.threadId,
-    );
-    if (!session) {
-      throw new Error(
-        `Session not found for ask-question request: threadId=${req.params.threadId}`,
-      );
-    }
-    if (!this.onAskUserQuestionRequest) {
-      throw new Error("onAskUserQuestionRequest handler is not set");
-    }
-    return this.onAskUserQuestionRequest(session, req);
   }
 
   private resolveWorkspaceFolder(
@@ -3235,8 +3278,17 @@ function opencodePartItemIdFromPart(args: {
   index: number;
 }): string {
   const key = args.partId?.trim() ?? "";
-  if (key) return opencodePartItemIdKey({ messageID: args.messageID, partType: args.partType, key });
-  return opencodePartItemId({ messageID: args.messageID, partType: args.partType, index: args.index });
+  if (key)
+    return opencodePartItemIdKey({
+      messageID: args.messageID,
+      partType: args.partType,
+      key,
+    });
+  return opencodePartItemId({
+    messageID: args.messageID,
+    partType: args.partType,
+    index: args.index,
+  });
 }
 
 function opencodeStepItemId(args: {
@@ -3541,12 +3593,9 @@ type V2ApprovalRequest = Extract<
   }
 >;
 
-type V2AskUserQuestionRequest = Extract<
-  ServerRequest,
-  {
-    method: "user/askQuestion";
-  }
->;
+type V2ApprovalDecision =
+  | CommandExecutionApprovalDecision
+  | FileChangeApprovalDecision;
 
 function parseOpencodeDefaultModelKey(
   cfg: Record<string, unknown> | null,

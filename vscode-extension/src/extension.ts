@@ -13,16 +13,18 @@ import { listAgentsFromDisk } from "./agents_disk";
 import type { AnyServerNotification } from "./backend/types";
 import type { ContentBlock } from "./generated/ContentBlock";
 import type { ImageContent } from "./generated/ImageContent";
-import type { AskUserQuestionRequest } from "./generated/AskUserQuestionRequest";
+import type { Personality } from "./generated/Personality";
 import type { CommandAction } from "./generated/v2/CommandAction";
 import type { Model } from "./generated/v2/Model";
 import type { RateLimitSnapshot } from "./generated/v2/RateLimitSnapshot";
 import type { RateLimitWindow } from "./generated/v2/RateLimitWindow";
-import type { AskUserQuestionResponse } from "./generated/v2/AskUserQuestionResponse";
 import type { Thread } from "./generated/v2/Thread";
 import type { ThreadItem } from "./generated/v2/ThreadItem";
+import type { ThreadSourceKind } from "./generated/v2/ThreadSourceKind";
 import type { ThreadTokenUsage } from "./generated/v2/ThreadTokenUsage";
 import type { Turn } from "./generated/v2/Turn";
+import type { CollaborationMode } from "./generated/CollaborationMode";
+import type { CollaborationModeMask } from "./generated/CollaborationModeMask";
 import type { BackendId, Session } from "./sessions";
 import { SessionStore } from "./sessions";
 import {
@@ -426,6 +428,7 @@ type SessionRuntime = {
     string,
     (decision: "accept" | "acceptForSession" | "decline" | "cancel") => void
   >;
+  pendingAppMentions: Array<{ name: string; path: string }>;
 };
 
 const runtimeBySessionId = new Map<string, SessionRuntime>();
@@ -438,6 +441,11 @@ let globalRateLimitStatusText: string | null = null;
 let globalRateLimitStatusTooltip: string | null = null;
 let customPrompts: CustomPromptSummary[] = [];
 const pendingModelFetchByBackend = new Map<string, Promise<void>>();
+const pendingCollaborationFetchByBackend = new Map<string, Promise<void>>();
+const collaborationPresetsByBackend = new Map<
+  string,
+  CollaborationModeMask[]
+>();
 const PROMPTS_CMD_PREFIX = "prompts";
 const loggedAgentScanErrors = new Set<string>();
 const UNHANDLED_DEBUG_MAX_CHARS = 100_000;
@@ -544,93 +552,9 @@ export function activate(context: vscode.ExtensionContext): void {
       rt.approvalResolvers.set(requestKey, resolve);
     });
   };
-  backendManager.onAskUserQuestionRequest = async (session, req) => {
-    if (!chatView) throw new Error("chatView is not initialized");
-    if (!session || typeof session.id !== "string") {
-      throw new Error("AskUserQuestion requires a valid session");
-    }
-
-    const params = (req as any).params as any;
-    const callId = typeof params?.callId === "string" ? params.callId : null;
-    const request = params?.request;
-    if (!callId) throw new Error("AskUserQuestion missing callId");
-    if (!request || typeof request !== "object") {
-      throw new Error("AskUserQuestion missing request payload");
-    }
-
-    // Switch UI context to the requesting session so the prompt is visible.
-    setActiveSession(session.id, { markRead: false });
-    chatView.refresh();
-    await showCodezViewContainer();
-    // Ensure the webview is actually instantiated and visible.
-    await vscode.commands.executeCommand("codez.chatView.focus");
-    chatView.reveal();
-
-    const response = await chatView.promptAskUserQuestion({
-      requestKey: callId,
-      request: request as AskUserQuestionRequest,
-    });
-
-    // Persist a concise summary in the chat history so the selection isn't lost
-    // after the inline card is dismissed.
-    const summaryText = formatAskUserQuestionSummary(
-      request as AskUserQuestionRequest,
-      response,
-    );
-    upsertBlock(session.id, {
-      id: `askUserQuestion:${callId}`,
-      type: "info",
-      title: "AskUserQuestion",
-      text: summaryText,
-    });
-
-    return response;
-  };
 
   diffProvider = new DiffDocumentProvider();
 
-  // NOTE: This is intentionally not contributed to the command palette in package.json.
-  // It's a helper for local/dev workflows (e.g. taking docs screenshots) without requiring
-  // an actual backend request.
-  context.subscriptions.push(
-    vscode.commands.registerCommand(
-      "codez._dev.askUserQuestionDemo",
-      async () => {
-        if (!chatView) throw new Error("chatView is not initialized");
-        await showCodezViewContainer();
-        await vscode.commands.executeCommand("codez.chatView.focus");
-        chatView.reveal();
-
-        const response = await chatView.promptAskUserQuestion({
-          requestKey: `demo:${Date.now()}`,
-          request: {
-            title: "Codex question",
-            questions: [
-              {
-                id: "context",
-                prompt: "Which context should I include?",
-                type: "multi_select",
-                allowOther: true,
-                required: false,
-                options: [
-                  {
-                    label: "Workspace files",
-                    value: "files",
-                    recommended: true,
-                  },
-                  { label: "Open editors", value: "editors" },
-                  { label: "Terminal output", value: "terminal" },
-                ],
-              },
-            ],
-          },
-        });
-        void vscode.window.showInformationMessage(
-          `AskUserQuestion demo result: ${JSON.stringify(response)}`,
-        );
-      },
-    ),
-  );
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(
       "codez-diff",
@@ -1290,6 +1214,8 @@ export function activate(context: vscode.ExtensionContext): void {
             title: s.title,
             threadId: s.threadId,
             customTitle: s.customTitle ?? false,
+            personality: null,
+            collaborationModePresetName: null,
           });
         }
       }
@@ -1357,6 +1283,78 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!backendId) return;
       const wantedCwd = normalizeFsPathForCompare(folder.uri.fsPath);
 
+      let archived: boolean | null = null;
+      let sortKey: "created_at" | "updated_at" | null = null;
+      let sourceKinds: ThreadSourceKind[] | null = null;
+
+      if (backendId !== "opencode") {
+        const archivedPicked = await vscode.window.showQuickPick(
+          [
+            {
+              label: "Active",
+              description: "Not archived",
+              archived: null as boolean | null,
+            },
+            {
+              label: "Archived",
+              description: "Archived only",
+              archived: true as const,
+            },
+          ],
+          { title: "History: Archived filter" },
+        );
+        if (!archivedPicked) return;
+        archived = archivedPicked.archived;
+
+        const sortPicked = await vscode.window.showQuickPick(
+          [
+            {
+              label: "Updated",
+              description: "Sort by updated_at",
+              sortKey: "updated_at" as const,
+            },
+            {
+              label: "Created",
+              description: "Sort by created_at",
+              sortKey: "created_at" as const,
+            },
+          ],
+          { title: "History: Sort" },
+        );
+        if (!sortPicked) return;
+        sortKey = sortPicked.sortKey;
+
+        const allSourceKinds: ThreadSourceKind[] = [
+          "cli",
+          "vscode",
+          "exec",
+          "appServer",
+          "subAgent",
+          "subAgentReview",
+          "subAgentCompact",
+          "subAgentThreadSpawn",
+          "subAgentOther",
+          "unknown",
+        ];
+        const sourcePicked = await vscode.window.showQuickPick(
+          [
+            {
+              label: "Interactive only",
+              description: "CLI / VSCode threads (default server behavior)",
+              sourceKinds: null as ThreadSourceKind[] | null,
+            },
+            {
+              label: "All sources",
+              description: "Include exec / app-server / sub-agents, etc.",
+              sourceKinds: allSourceKinds,
+            },
+          ],
+          { title: "History: Source filter" },
+        );
+        if (!sourcePicked) return;
+        sourceKinds = sourcePicked.sourceKinds;
+      }
+
       let cursor: string | null = null;
       const collected: Thread[] = [];
 
@@ -1370,6 +1368,9 @@ export function activate(context: vscode.ExtensionContext): void {
               cursor,
               limit: 50,
               modelProviders: null,
+              sortKey,
+              sourceKinds,
+              archived,
             },
           );
         } catch (err) {
@@ -1384,7 +1385,7 @@ export function activate(context: vscode.ExtensionContext): void {
         collected.push(...filtered);
 
         const items = collected.map((t) => ({
-          label: `${formatThreadWhen(t.createdAt)}  ${formatThreadLabel(t.preview)}`,
+          label: `${formatThreadWhen(sortKey === "created_at" ? t.createdAt : t.updatedAt)}  ${formatThreadLabel(t.preview)}`,
           thread: t,
           kind: "thread" as const,
         }));
@@ -1420,6 +1421,23 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         const thread = (picked as any).thread as Thread;
+        if (backendId !== "opencode" && archived === true) {
+          try {
+            await backendManager.unarchiveThreadForWorkspaceFolderAndBackendId(
+              folder,
+              backendId,
+              thread.id,
+            );
+          } catch (err) {
+            output.appendLine(
+              `[resume] Failed to unarchive threadId=${thread.id}: ${String(err)}`,
+            );
+            void vscode.window.showErrorMessage(
+              "Failed to unarchive the selected thread.",
+            );
+            return;
+          }
+        }
         const session: Session = {
           id: crypto.randomUUID(),
           backendId,
@@ -1427,6 +1445,8 @@ export function activate(context: vscode.ExtensionContext): void {
           workspaceFolderUri: folder.uri.toString(),
           title: normalizeSessionTitle(thread.preview || "Resumed"),
           threadId: thread.id,
+          personality: null,
+          collaborationModePresetName: null,
         };
 
         sessions.add(session.backendKey, session);
@@ -1505,6 +1525,8 @@ export function activate(context: vscode.ExtensionContext): void {
           title,
           customTitle: true,
           threadId: src.threadId,
+          personality: src.personality ?? null,
+          collaborationModePresetName: src.collaborationModePresetName ?? null,
         };
 
         sessions.add(session.backendKey, session);
@@ -2070,6 +2092,68 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!picked) return;
 
         chatView?.insertIntoInput(`$${picked.skill.name} `);
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "codez.cycleCollaborationMode",
+      async (args?: unknown) => {
+        if (!backendManager)
+          throw new Error("backendManager is not initialized");
+        if (!sessions) throw new Error("sessions is not initialized");
+        if (!extensionContext) throw new Error("extensionContext is not set");
+
+        const session =
+          parseSessionArg(args, sessions) ??
+          (activeSessionId ? sessions.getById(activeSessionId) : null);
+        if (!session) return;
+        if (session.backendId === "opencode") {
+          chatView?.toast(
+            "info",
+            "opencode backend では mode 切替は未対応です。",
+          );
+          return;
+        }
+
+        const presets = await ensureCollaborationPresetsFetched(session);
+        const modeOrder: Record<string, number> = {
+          plan: 1,
+          code: 2,
+          pair_programming: 3,
+          execute: 4,
+          custom: 5,
+        };
+        const sorted = [...presets].sort((a, b) => {
+          const ao = modeOrder[a.mode ?? "custom"] ?? 999;
+          const bo = modeOrder[b.mode ?? "custom"] ?? 999;
+          if (ao !== bo) return ao - bo;
+          return a.name.localeCompare(b.name);
+        });
+
+        const candidates: Array<{ name: string | null; label: string }> = [
+          { name: null, label: "default" },
+          ...sorted.map((p) => ({
+            name: p.name,
+            label: p.name,
+          })),
+        ];
+
+        const currentName = session.collaborationModePresetName ?? null;
+        const currentIndex = Math.max(
+          0,
+          candidates.findIndex((c) => c.name === currentName),
+        );
+        const next = candidates[(currentIndex + 1) % candidates.length]!;
+
+        session.collaborationModePresetName = next.name;
+        saveSessions(extensionContext, sessions);
+
+        chatView?.toast(
+          "info",
+          `Mode: ${next.label} (Shift+Tab to cycle, /collab to pick)`,
+        );
       },
     ),
   );
@@ -2961,12 +3045,85 @@ async function sendUserInput(
   chatView?.refresh();
   schedulePersistRuntime(session.id);
 
+  let collaborationMode: CollaborationMode | null = null;
+  if (
+    session.backendId !== "opencode" &&
+    session.collaborationModePresetName &&
+    session.collaborationModePresetName.trim()
+  ) {
+    const presets = await ensureCollaborationPresetsFetched(session);
+    const preset =
+      presets.find((p) => p.name === session.collaborationModePresetName) ??
+      null;
+    if (!preset) {
+      rt.sending = false;
+      const msg = `collaboration mode preset not found: ${session.collaborationModePresetName}`;
+      upsertBlock(session.id, {
+        id: newLocalId("collabMissing"),
+        type: "error",
+        title: "Collaboration mode",
+        text: msg,
+      });
+      chatView?.refresh();
+      throw new Error(msg);
+    }
+    if (!preset.model) {
+      rt.sending = false;
+      const msg = `collaboration preset '${preset.name}' has no model; cannot apply.`;
+      upsertBlock(session.id, {
+        id: newLocalId("collabInvalid"),
+        type: "error",
+        title: "Collaboration mode",
+        text: msg,
+      });
+      chatView?.refresh();
+      throw new Error(msg);
+    }
+    collaborationMode = {
+      mode: preset.mode ?? "custom",
+      settings: {
+        model: preset.model,
+        reasoning_effort: preset.reasoning_effort ?? null,
+        developer_instructions: preset.developer_instructions ?? null,
+      },
+    };
+  }
+
+  const mentionInputs =
+    session.backendId !== "opencode"
+      ? rt.pendingAppMentions
+          .filter(
+            (m) =>
+              Boolean(m.name) && Boolean(m.path) && text.includes(`$${m.name}`),
+          )
+          .map((m) => ({
+            type: "mention" as const,
+            name: m.name,
+            path: m.path,
+          }))
+      : [];
+  rt.pendingAppMentions.length = 0;
+
+  const personality = session.personality ?? null;
+  const modelSettings =
+    modelState || personality || collaborationMode
+      ? {
+          model: modelState?.model ?? null,
+          provider: modelState?.provider ?? null,
+          reasoning: modelState?.reasoning ?? null,
+          agent: modelState?.agent ?? null,
+          personality,
+          collaborationMode,
+        }
+      : null;
+
   try {
     await backendManager.sendMessageWithModelAndImages(
       session,
       text,
       backendImages,
-      modelState,
+      modelSettings,
+      mentionInputs,
     );
   } catch (err) {
     const errText = formatUnknownError(err);
@@ -3123,6 +3280,221 @@ async function handleSlashCommand(
       schedulePersistRuntime(session.id);
       return true;
     }
+  }
+  if (cmd === "apps") {
+    if (arg) {
+      upsertBlock(session.id, {
+        id: newLocalId("appsError"),
+        type: "error",
+        title: "Slash command error",
+        text: "/apps does not take arguments.",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (session.backendId === "opencode") {
+      upsertBlock(session.id, {
+        id: newLocalId("appsUnsupported"),
+        type: "info",
+        title: "Apps",
+        text: "opencode backend では /apps は未対応です。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    try {
+      const apps = await backendManager.listAppsForSession(session);
+      if (apps.length === 0) {
+        upsertBlock(session.id, {
+          id: newLocalId("appsEmpty"),
+          type: "info",
+          title: "Apps",
+          text: "利用可能な app が見つかりませんでした。",
+        });
+        chatView?.refresh();
+        schedulePersistRuntime(session.id);
+        return true;
+      }
+
+      const picked = await vscode.window.showQuickPick(
+        apps.map((a) => ({
+          label: `$${a.name}`,
+          description: a.isAccessible ? "" : "(not accessible)",
+          detail: a.description ?? a.installUrl ?? "",
+          app: a,
+        })),
+        { title: "Apps: Insert into prompt" },
+      );
+      if (!picked) return true;
+      const rt = ensureRuntime(session.id);
+      const name = String(picked.app.name || "").trim();
+      const id = String(picked.app.id || "").trim();
+      if (name && id) {
+        const path = `app://${id}`;
+        const existing = rt.pendingAppMentions.find(
+          (m) => m.name === name && m.path === path,
+        );
+        if (!existing) rt.pendingAppMentions.push({ name, path });
+      }
+      chatView?.insertIntoInput(`$${picked.app.name} `);
+      return true;
+    } catch (err) {
+      const msg = formatUnknownError(err);
+      upsertBlock(session.id, {
+        id: newLocalId("appsListError"),
+        type: "error",
+        title: "Apps",
+        text: msg,
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+  }
+  if (cmd === "personality") {
+    if (arg) {
+      upsertBlock(session.id, {
+        id: newLocalId("personalityError"),
+        type: "error",
+        title: "Slash command error",
+        text: "/personality does not take arguments.",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (session.backendId === "opencode") {
+      upsertBlock(session.id, {
+        id: newLocalId("personalityUnsupported"),
+        type: "info",
+        title: "Personality",
+        text: "opencode backend では /personality は未対応です。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (!sessions) throw new Error("sessions is not initialized");
+    if (!extensionContext) throw new Error("extensionContext is not set");
+
+    const picked = await vscode.window.showQuickPick(
+      [
+        {
+          label: "default",
+          description: "Backend default personality",
+          personality: null as Personality | null,
+        },
+        {
+          label: "friendly",
+          description: "Friendly tone",
+          personality: "friendly" as const,
+        },
+        {
+          label: "pragmatic",
+          description: "Pragmatic tone",
+          personality: "pragmatic" as const,
+        },
+      ],
+      { title: "Personality: Select" },
+    );
+    if (!picked) return true;
+
+    session.personality = picked.personality;
+    saveSessions(extensionContext, sessions);
+
+    upsertBlock(session.id, {
+      id: newLocalId("personalitySet"),
+      type: "info",
+      title: "Personality",
+      text: `Set to ${picked.label}.`,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+    return true;
+  }
+  if (cmd === "collab") {
+    if (arg) {
+      upsertBlock(session.id, {
+        id: newLocalId("collabError"),
+        type: "error",
+        title: "Slash command error",
+        text: "/collab does not take arguments.",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (session.backendId === "opencode") {
+      upsertBlock(session.id, {
+        id: newLocalId("collabUnsupported"),
+        type: "info",
+        title: "Collaboration mode",
+        text: "opencode backend では /collab は未対応です。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    if (!sessions) throw new Error("sessions is not initialized");
+    if (!extensionContext) throw new Error("extensionContext is not set");
+
+    const presets = await ensureCollaborationPresetsFetched(session);
+    if (presets.length === 0) {
+      upsertBlock(session.id, {
+        id: newLocalId("collabEmpty"),
+        type: "info",
+        title: "Collaboration mode",
+        text: "利用可能な collaboration preset がありません。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    const items: Array<vscode.QuickPickItem & { presetName: string | null }> = [
+      {
+        label: "default",
+        description: "Disable collaboration preset (use normal settings)",
+        presetName: null,
+      },
+      ...presets.map((p) => ({
+        label: p.name,
+        description: p.mode ? `mode=${p.mode}` : "",
+        detail: p.model ? `model=${p.model}` : "",
+        presetName: p.name,
+      })),
+    ];
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Collaboration mode",
+      placeHolder: "Pick a collaboration preset (Shift+Tab cycles).",
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) return true;
+
+    session.collaborationModePresetName = picked.presetName;
+    saveSessions(extensionContext, sessions);
+
+    upsertBlock(session.id, {
+      id: newLocalId("collabSet"),
+      type: "info",
+      title: "Collaboration mode",
+      text: `Set to ${picked.label}.`,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+    return true;
   }
   if (cmd === "init") {
     if (arg) {
@@ -3496,6 +3868,9 @@ async function handleSlashCommand(
         "- /resume: Resume from history",
         "- /status: Show status",
         "- /mcp: List MCP servers",
+        "- /apps: Browse apps",
+        "- /collab: Change collaboration mode (Shift+Tab)",
+        "- /personality: Set personality",
         "- /diff: Open Latest Diff",
         "- /rename <title>: Rename session",
         "- /skills: Browse skills",
@@ -4103,6 +4478,7 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     legacyWebSearchTargetByCallId: new Map(),
     pendingApprovals: new Map(),
     approvalResolvers: new Map(),
+    pendingAppMentions: [],
   };
   runtimeBySessionId.set(sessionId, rt);
   return rt;
@@ -4133,6 +4509,36 @@ async function ensureModelsFetched(session: Session): Promise<void> {
     .finally(() => pendingModelFetchByBackend.delete(backendKey));
   pendingModelFetchByBackend.set(backendKey, promise);
   await promise;
+}
+
+async function ensureCollaborationPresetsFetched(
+  session: Session,
+): Promise<CollaborationModeMask[]> {
+  if (!backendManager) return [];
+  const backendKey = session.backendKey;
+  const cached = collaborationPresetsByBackend.get(backendKey);
+  if (cached) return cached;
+  const pending = pendingCollaborationFetchByBackend.get(backendKey);
+  if (pending) {
+    await pending;
+    return collaborationPresetsByBackend.get(backendKey) ?? [];
+  }
+
+  const promise = backendManager
+    .listCollaborationModePresetsForSession(session)
+    .then((presets) => {
+      collaborationPresetsByBackend.set(backendKey, presets);
+    })
+    .catch((err) => {
+      outputChannel?.appendLine(
+        `[collab] Failed to list collaboration presets: ${String((err as Error)?.message ?? err)}`,
+      );
+      collaborationPresetsByBackend.set(backendKey, []);
+    })
+    .finally(() => pendingCollaborationFetchByBackend.delete(backendKey));
+  pendingCollaborationFetchByBackend.set(backendKey, promise);
+  await promise;
+  return collaborationPresetsByBackend.get(backendKey) ?? [];
 }
 
 function buildChatState(): ChatViewState {
@@ -4579,9 +4985,13 @@ function applyServerNotification(
         metadata?: unknown;
       };
       const requestID =
-        typeof p?.requestID === "string" ? p.requestID : String(p?.requestID ?? "");
+        typeof p?.requestID === "string"
+          ? p.requestID
+          : String(p?.requestID ?? "");
       const permission =
-        typeof p?.permission === "string" ? p.permission : String(p?.permission ?? "");
+        typeof p?.permission === "string"
+          ? p.permission
+          : String(p?.permission ?? "");
       if (!requestID.trim() || !permission.trim()) return;
       const patterns = Array.isArray(p?.patterns)
         ? (p.patterns as unknown[]).map((x) => String(x ?? "")).filter(Boolean)
@@ -4615,7 +5025,9 @@ function applyServerNotification(
         reply?: unknown;
       };
       const requestID =
-        typeof p?.requestID === "string" ? p.requestID : String(p?.requestID ?? "");
+        typeof p?.requestID === "string"
+          ? p.requestID
+          : String(p?.requestID ?? "");
       const replyRaw =
         typeof p?.reply === "string" ? p.reply : String(p?.reply ?? "");
       if (!requestID.trim()) return;
@@ -5114,7 +5526,8 @@ function applyItemLifecycle(
           }));
           const opencodeSeqRaw = anyItem.opencodeSeq as unknown;
           const opencodeSeq =
-            typeof opencodeSeqRaw === "number" && Number.isFinite(opencodeSeqRaw)
+            typeof opencodeSeqRaw === "number" &&
+            Number.isFinite(opencodeSeqRaw)
               ? Math.trunc(opencodeSeqRaw)
               : null;
           if (block.type === "step") {
@@ -5164,10 +5577,12 @@ function applyItemLifecycle(
           if (container.type !== "step") break;
           const opencodeSeqRaw = anyItem.opencodeSeq as unknown;
           const opencodeSeq =
-            typeof opencodeSeqRaw === "number" && Number.isFinite(opencodeSeqRaw)
+            typeof opencodeSeqRaw === "number" &&
+            Number.isFinite(opencodeSeqRaw)
               ? Math.trunc(opencodeSeqRaw)
               : null;
-          if (opencodeSeq !== null) (container as any).opencodeSeq = opencodeSeq;
+          if (opencodeSeq !== null)
+            (container as any).opencodeSeq = opencodeSeq;
 
           const status =
             anyItem.status === "completed"
@@ -5344,7 +5759,9 @@ function applyItemLifecycle(
               ? String(anyItem.hash).trim()
               : null;
           const files = Array.isArray(anyItem.files)
-            ? (anyItem.files as unknown[]).map((x) => String(x ?? "")).filter(Boolean)
+            ? (anyItem.files as unknown[])
+                .map((x) => String(x ?? ""))
+                .filter(Boolean)
             : [];
           const lines: string[] = [];
           lines.push(hash ? `hash: \`${hash.slice(0, 12)}\`` : "hash: —");
@@ -5353,7 +5770,11 @@ function applyItemLifecycle(
             lines.push("files:");
             for (const f of files) lines.push(`- ${f}`);
           }
-          upsertOpencodeInfo({ id, title: "OpenCode Patch", text: lines.join("\n") });
+          upsertOpencodeInfo({
+            id,
+            title: "OpenCode Patch",
+            text: lines.join("\n"),
+          });
           break;
         }
 
@@ -5371,8 +5792,12 @@ function applyItemLifecycle(
           const lines: string[] = [];
           lines.push(`name: \`${name}\``);
           if (typeof source?.value === "string" && source.value.trim()) {
-            const start = typeof source.start === "number" ? Math.trunc(source.start) : null;
-            const end = typeof source.end === "number" ? Math.trunc(source.end) : null;
+            const start =
+              typeof source.start === "number"
+                ? Math.trunc(source.start)
+                : null;
+            const end =
+              typeof source.end === "number" ? Math.trunc(source.end) : null;
             const range =
               start !== null && end !== null ? ` (${start}-${end})` : "";
             lines.push("");
@@ -5381,7 +5806,11 @@ function applyItemLifecycle(
             lines.push(String(source.value).trimEnd());
             lines.push("```");
           }
-          upsertOpencodeInfo({ id, title: "OpenCode Agent", text: lines.join("\n") });
+          upsertOpencodeInfo({
+            id,
+            title: "OpenCode Agent",
+            text: lines.join("\n"),
+          });
           break;
         }
 
@@ -5392,7 +5821,9 @@ function applyItemLifecycle(
             typeof anyItem.snapshot === "string" && anyItem.snapshot.trim()
               ? String(anyItem.snapshot).trim()
               : null;
-          const text = snapshot ? `snapshot: \`${snapshot.slice(0, 12)}\`` : "snapshot: —";
+          const text = snapshot
+            ? `snapshot: \`${snapshot.slice(0, 12)}\``
+            : "snapshot: —";
           upsertOpencodeInfo({ id, title: "OpenCode Snapshot", text });
           break;
         }
@@ -5401,7 +5832,8 @@ function applyItemLifecycle(
           const id = String(anyItem.id ?? "");
           if (!id) break;
           const attempt =
-            typeof anyItem.attempt === "number" && Number.isFinite(anyItem.attempt)
+            typeof anyItem.attempt === "number" &&
+            Number.isFinite(anyItem.attempt)
               ? Math.trunc(anyItem.attempt)
               : 1;
           const err =
@@ -5432,7 +5864,8 @@ function applyItemLifecycle(
           const id = String(anyItem.id ?? "");
           if (!id) break;
           const description =
-            typeof anyItem.description === "string" && anyItem.description.trim()
+            typeof anyItem.description === "string" &&
+            anyItem.description.trim()
               ? String(anyItem.description).trim()
               : null;
           const agent =
@@ -5454,8 +5887,14 @@ function applyItemLifecycle(
           const lines: string[] = [];
           if (description) lines.push(`**${description}**`);
           if (agent) lines.push(`- agent: \`${agent}\``);
-          if (model && typeof model.providerID === "string" && typeof model.modelID === "string") {
-            lines.push(`- model: \`${String(model.providerID)}/${String(model.modelID)}\``);
+          if (
+            model &&
+            typeof model.providerID === "string" &&
+            typeof model.modelID === "string"
+          ) {
+            lines.push(
+              `- model: \`${String(model.providerID)}/${String(model.modelID)}\``,
+            );
           }
           if (command) lines.push(`- command: \`${command}\``);
           if (prompt) {
@@ -5866,114 +6305,6 @@ function formatParamsForDisplay(params: unknown): string {
   const limit = 10_000;
   if (json.length <= limit) return json;
   return `${json.slice(0, limit)}\n...(truncated ${json.length - limit} chars)`;
-}
-
-function formatAskUserQuestionSummary(
-  request: AskUserQuestionRequest,
-  response: AskUserQuestionResponse,
-): string {
-  const title =
-    typeof (request as any)?.title === "string" && (request as any).title.trim()
-      ? String((request as any).title).trim()
-      : "Codex question";
-
-  const answers =
-    typeof (response as any)?.answers === "object" &&
-    (response as any).answers !== null
-      ? ((response as any).answers as Record<string, unknown>)
-      : {};
-
-  const questions = Array.isArray((request as any)?.questions)
-    ? ((request as any).questions as Array<any>)
-    : [];
-
-  const lines: string[] = [];
-  lines.push(`**${title}**`);
-  if ((response as any)?.cancelled) lines.push("_Cancelled_");
-  lines.push("");
-
-  for (const q of questions) {
-    const id = typeof q?.id === "string" ? q.id : null;
-    const prompt = typeof q?.prompt === "string" ? q.prompt : null;
-    if (!id || !prompt) continue;
-
-    const rawAnswer = answers[id];
-    const optLabelByValue = new Map<string, string>();
-    const rawOptions = Array.isArray(q?.options) ? (q.options as any[]) : [];
-    for (const opt of rawOptions) {
-      const value = typeof opt?.value === "string" ? opt.value : null;
-      const label = typeof opt?.label === "string" ? opt.label : null;
-      if (value && label) optLabelByValue.set(value, label);
-    }
-
-    const allowOther = Boolean(q?.allow_other);
-    const questionType = typeof q?.type === "string" ? q.type : null;
-
-    lines.push(`- **${prompt}**`);
-
-    if (questionType === "single_select" || questionType === "multi_select") {
-      const optionValues = new Set<string>(optLabelByValue.keys());
-
-      const selectedValues: string[] = (() => {
-        if (rawAnswer === null || rawAnswer === undefined) return [];
-        if (Array.isArray(rawAnswer)) return rawAnswer.map((v) => String(v));
-        return [String(rawAnswer)];
-      })();
-
-      const selectedOptionValues = new Set<string>(
-        selectedValues.filter((v) => optionValues.has(v)),
-      );
-      const selectedOtherValues = selectedValues
-        .filter((v) => !optionValues.has(v))
-        .map((v) => v.trim())
-        .filter(Boolean);
-
-      for (const opt of rawOptions) {
-        const value = typeof opt?.value === "string" ? opt.value : null;
-        const label = typeof opt?.label === "string" ? opt.label : null;
-        if (!value || !label) continue;
-        const checked = selectedOptionValues.has(value) ? "x" : " ";
-        lines.push(`  - [${checked}] ${label}`);
-      }
-
-      if (allowOther) {
-        const checked = selectedOtherValues.length > 0 ? "x" : " ";
-        const other =
-          selectedOtherValues.length > 0
-            ? `: ${selectedOtherValues.join(", ")}`
-            : "";
-        lines.push(`  - [${checked}] Other…${other}`);
-      }
-
-      if (
-        rawOptions.length === 0 &&
-        selectedValues.length > 0 &&
-        selectedOtherValues.length > 0
-      ) {
-        lines.push(`  - Answer: ${selectedOtherValues.join(", ")}`);
-      }
-
-      if (selectedValues.length === 0) lines.push("  - _No selection_");
-      continue;
-    }
-
-    const rendered = (() => {
-      if (rawAnswer === null || rawAnswer === undefined) return "—";
-      if (Array.isArray(rawAnswer)) {
-        const parts = rawAnswer
-          .map((v) => String(v))
-          .map((s) => s.trim())
-          .filter(Boolean);
-        return parts.length > 0 ? parts.join(", ") : "—";
-      }
-      const s = String(rawAnswer).trim();
-      return s ? s : "—";
-    })();
-
-    lines.push(`  - Answer: ${rendered}`);
-  }
-
-  return lines.join("\n").trim();
 }
 
 function removeGlobalWhere(pred: (b: ChatBlock) => boolean): void {
@@ -6961,6 +7292,8 @@ type PersistedSessionV2 = Pick<
   | "title"
   | "threadId"
   | "customTitle"
+  | "personality"
+  | "collaborationModePresetName"
 >;
 
 function readPersistedSessionsV1(
@@ -7016,6 +7349,8 @@ function loadSessions(
     const title = o["title"];
     const customTitle = o["customTitle"];
     const threadId = o["threadId"];
+    const personality = o["personality"];
+    const collaborationModePresetName = o["collaborationModePresetName"];
 
     if (
       typeof id !== "string" ||
@@ -7030,6 +7365,16 @@ function loadSessions(
       continue;
     }
 
+    const personalityVal: Personality | null =
+      personality === "friendly" || personality === "pragmatic"
+        ? personality
+        : null;
+    const collaborationModePresetNameVal =
+      typeof collaborationModePresetName === "string" &&
+      collaborationModePresetName.trim()
+        ? collaborationModePresetName.trim()
+        : null;
+
     store.add(backendKey, {
       id,
       backendKey,
@@ -7038,6 +7383,8 @@ function loadSessions(
       title,
       customTitle: typeof customTitle === "boolean" ? customTitle : false,
       threadId,
+      personality: personalityVal,
+      collaborationModePresetName: collaborationModePresetNameVal,
     });
   }
 }
@@ -7061,6 +7408,8 @@ function toPersistedSessionV2(session: Session): PersistedSessionV2 {
     title,
     customTitle,
     threadId,
+    personality,
+    collaborationModePresetName,
   } = session;
   return {
     id,
@@ -7070,6 +7419,8 @@ function toPersistedSessionV2(session: Session): PersistedSessionV2 {
     title,
     customTitle,
     threadId,
+    personality: personality ?? null,
+    collaborationModePresetName: collaborationModePresetName ?? null,
   };
 }
 
