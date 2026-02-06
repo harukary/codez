@@ -917,7 +917,10 @@ function main(): void {
   let pendingImages: PendingImage[] = [];
   let lastModeToggleAt = 0;
 
-  function handleCollaborationModeToggleShortcut(e: KeyboardEvent): boolean {
+  function handleCollaborationModeToggleShortcut(
+    e: KeyboardEvent,
+    scope: "global" | "input",
+  ): boolean {
     const isCtrlShiftOnly =
       ((e.key === "Shift" && e.ctrlKey) || (e.key === "Control" && e.shiftKey)) &&
       !e.altKey &&
@@ -925,7 +928,8 @@ function main(): void {
       !e.repeat;
     const isShiftTab =
       e.key === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
-    const wantsToggle = isCtrlShiftOnly || isShiftTab;
+    const wantsToggle =
+      scope === "global" ? isCtrlShiftOnly : isCtrlShiftOnly || isShiftTab;
     if (!wantsToggle) return false;
     const sessionId = state.activeSession?.id ?? null;
     if (!sessionId) return false;
@@ -5591,7 +5595,8 @@ function main(): void {
   document.addEventListener(
     "keydown",
     (e) => {
-      if (handleCollaborationModeToggleShortcut(e as KeyboardEvent)) return;
+      if (handleCollaborationModeToggleShortcut(e as KeyboardEvent, "global"))
+        return;
       const ke = e as KeyboardEvent;
       if (ke.key !== "Escape") return;
       if (!state.sending) return;
@@ -5734,7 +5739,8 @@ function main(): void {
   });
 
   inputEl.addEventListener("keydown", (e) => {
-    if (handleCollaborationModeToggleShortcut(e as KeyboardEvent)) return;
+    if (handleCollaborationModeToggleShortcut(e as KeyboardEvent, "input"))
+      return;
     if (
       (e as KeyboardEvent).key === "Enter" &&
       !(e as KeyboardEvent).shiftKey
