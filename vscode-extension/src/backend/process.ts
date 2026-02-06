@@ -26,6 +26,8 @@ import type { ModelListParams } from "../generated/v2/ModelListParams";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
 import type { ConfigReadParams } from "../generated/v2/ConfigReadParams";
 import type { ConfigReadResponse } from "../generated/v2/ConfigReadResponse";
+import type { ConfigValueWriteParams } from "../generated/v2/ConfigValueWriteParams";
+import type { ConfigWriteResponse } from "../generated/v2/ConfigWriteResponse";
 import type { ThreadArchiveParams } from "../generated/v2/ThreadArchiveParams";
 import type { ThreadArchiveResponse } from "../generated/v2/ThreadArchiveResponse";
 import type { ThreadUnarchiveParams } from "../generated/v2/ThreadUnarchiveParams";
@@ -335,6 +337,15 @@ export class BackendProcess implements vscode.Disposable {
     });
   }
 
+  public async configValueWrite(
+    params: ConfigValueWriteParams,
+  ): Promise<ConfigWriteResponse> {
+    return this.rpc.request<ConfigWriteResponse>({
+      method: "config/value/write",
+      params,
+    });
+  }
+
   public async accountRead(
     params: GetAccountParams,
   ): Promise<GetAccountResponse> {
@@ -402,6 +413,9 @@ export class BackendProcess implements vscode.Disposable {
         name: "codez-vscode",
         title: "Codex UI VS Code Extension",
         version: "0.0.1",
+      },
+      capabilities: {
+        experimentalApi: true,
       },
     };
     const result = await this.rpc.request<InitializeResponse>({

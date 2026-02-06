@@ -49,6 +49,8 @@ import type { RemoteSkillSummary } from "../generated/v2/RemoteSkillSummary";
 import type { SkillsRemoteReadResponse } from "../generated/v2/SkillsRemoteReadResponse";
 import type { SkillsRemoteWriteResponse } from "../generated/v2/SkillsRemoteWriteResponse";
 import type { ConfigReadResponse } from "../generated/v2/ConfigReadResponse";
+import type { ConfigValueWriteParams } from "../generated/v2/ConfigValueWriteParams";
+import type { ConfigWriteResponse } from "../generated/v2/ConfigWriteResponse";
 import type { Thread } from "../generated/v2/Thread";
 import type { ThreadSourceKind } from "../generated/v2/ThreadSourceKind";
 import type { Turn } from "../generated/v2/Turn";
@@ -755,6 +757,35 @@ export class BackendManager implements vscode.Disposable {
     return await proc.configRead({
       includeLayers: true,
       cwd: folder.uri.fsPath,
+    });
+  }
+
+  public async writeConfigValueForSession(
+    session: Session,
+    params: Omit<ConfigValueWriteParams, "filePath"> & { filePath?: string | null },
+  ): Promise<ConfigWriteResponse> {
+    if (session.backendId === "opencode") {
+      throw new Error("opencode backend does not support config/value/write");
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    return await proc.configValueWrite({
+      keyPath: params.keyPath,
+      value: params.value,
+      mergeStrategy: params.mergeStrategy,
+      filePath: params.filePath ?? null,
+      expectedVersion: params.expectedVersion ?? null,
     });
   }
 

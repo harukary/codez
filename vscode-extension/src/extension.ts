@@ -28,6 +28,7 @@ import type { ThreadItem } from "./generated/v2/ThreadItem";
 import type { ThreadSourceKind } from "./generated/v2/ThreadSourceKind";
 import type { ThreadTokenUsage } from "./generated/v2/ThreadTokenUsage";
 import type { Turn } from "./generated/v2/Turn";
+import type { UserInput } from "./generated/v2/UserInput";
 import type { CollaborationMode } from "./generated/CollaborationMode";
 import type { CollaborationModeMask } from "./generated/CollaborationModeMask";
 import type { BackendId, Session } from "./sessions";
@@ -3236,8 +3237,9 @@ async function sendUserInput(
       chatView?.refresh();
       throw new Error(msg);
     }
+    const mode = preset.mode === "plan" ? "plan" : "default";
     collaborationMode = {
-      mode: preset.mode ?? "custom",
+      mode,
       settings: {
         model: preset.model,
         reasoning_effort: preset.reasoning_effort ?? null,
@@ -3246,7 +3248,7 @@ async function sendUserInput(
     };
   }
 
-  const mentionInputs =
+  const mentionInputs: UserInput[] =
     session.backendId !== "opencode"
       ? rt.pendingAppMentions
           .filter(
@@ -3630,6 +3632,112 @@ async function handleSlashCommand(
     }
 
     await showDebugConfigActionCard(session);
+    return true;
+  }
+  if (cmd === "experimental") {
+    if (arg) {
+      upsertBlock(session.id, {
+        id: newLocalId("experimentalError"),
+        type: "error",
+        title: "Slash command error",
+        text: "/experimental does not take arguments.",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (session.backendId === "opencode") {
+      upsertBlock(session.id, {
+        id: newLocalId("experimentalUnsupported"),
+        type: "info",
+        title: "Experimental features",
+        text: "opencode backend では /experimental は未対応です。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
+
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    const config = await backendManager.readConfigForSession(session);
+    const features = (((config.config as unknown as Record<string, unknown>)[
+      "features"
+    ] ?? {}) as Record<string, unknown>) || {};
+    const specs = [
+      {
+        key: "shell_snapshot",
+        label: "Shell snapshot",
+        description: "ログインシェル再実行を減らして実行を高速化",
+      },
+      {
+        key: "collab",
+        label: "Sub-agents",
+        description: "サブエージェント実行を有効化",
+      },
+      {
+        key: "apps",
+        label: "Apps",
+        description: "$ メンションで Apps (Connectors) を利用",
+      },
+    ] as const;
+
+    const items = specs.map((spec) => ({
+      label: spec.label,
+      description: spec.description,
+      detail: `features.${spec.key}`,
+      picked: Boolean(features[spec.key]),
+      key: spec.key,
+    }));
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: "Experimental features",
+      placeHolder: "有効にしたい機能を選択（複数可）",
+      canPickMany: true,
+      matchOnDescription: true,
+      matchOnDetail: true,
+    });
+    if (!picked) return true;
+
+    const selected = new Set(picked.map((item) => item.key));
+    const preferredPath = await resolvePreferredConfigWritePathForSession(session);
+    let changed = 0;
+    for (const spec of specs) {
+      const enabled = selected.has(spec.key);
+      const current = Boolean(features[spec.key]);
+      if (enabled === current) continue;
+      await backendManager.writeConfigValueForSession(session, {
+        keyPath: `features.${spec.key}`,
+        value: enabled,
+        mergeStrategy: "upsert",
+        filePath: preferredPath,
+      });
+      changed += 1;
+    }
+
+    if (changed === 0) {
+      upsertBlock(session.id, {
+        id: newLocalId("experimentalNoChange"),
+        type: "info",
+        title: "Experimental features",
+        text: "変更はありません。",
+      });
+    } else {
+      const targetText = preferredPath
+        ? `Saved to ${path.relative(
+            resolveWorkspaceFolderForSession(session)?.uri.fsPath ?? "",
+            preferredPath,
+          )}.`
+        : "Saved to user config.toml.";
+      upsertBlock(session.id, {
+        id: newLocalId("experimentalUpdated"),
+        type: "system",
+        title: "Experimental features",
+        text: `Updated ${changed} feature(s). ${targetText}`,
+      });
+    }
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
     return true;
   }
   if (cmd === "collab") {
@@ -4083,6 +4191,7 @@ async function handleSlashCommand(
         "- /collab: Change collaboration mode (Ctrl+Shift)",
         "- /personality: Set personality",
         "- /debug-config: Show config details",
+        "- /experimental: Toggle experimental features",
         "- /diff: Open Latest Diff",
         "- /rename <title>: Rename session",
         "- /skills: Browse skills",
@@ -4684,6 +4793,20 @@ function resolveWorkspaceFolderForSession(
 ): vscode.WorkspaceFolder | null {
   const uri = vscode.Uri.parse(session.workspaceFolderUri);
   return vscode.workspace.getWorkspaceFolder(uri) ?? null;
+}
+
+async function resolvePreferredConfigWritePathForSession(
+  session: Session,
+): Promise<string | null> {
+  const folder = resolveWorkspaceFolderForSession(session);
+  if (!folder) return null;
+  const projectConfigPath = path.join(folder.uri.fsPath, ".codex", "config.toml");
+  try {
+    await fs.access(projectConfigPath);
+    return projectConfigPath;
+  } catch {
+    return null;
+  }
 }
 
 function formatAsAttachment(
@@ -6933,10 +7056,19 @@ function formatTokenUsageStatus(tokenUsage: ThreadTokenUsage): string {
   return `tokens used=${formatK(total.totalTokens)}`;
 }
 
-function isImageContent(block: ContentBlock): block is ImageContent {
+function isContentBlock(value: unknown): value is ContentBlock {
   return (
-    typeof (block as ImageContent).data === "string" &&
-    typeof (block as ImageContent).mimeType === "string"
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+function isImageContent(value: unknown): value is ImageContent {
+  return (
+    isContentBlock(value) &&
+    typeof (value as ImageContent).data === "string" &&
+    typeof (value as ImageContent).mimeType === "string"
   );
 }
 
@@ -7019,9 +7151,10 @@ async function appendMcpImageBlocks(
   itemId: string,
   server: string,
   tool: string,
-  content: ContentBlock[],
+  content: unknown,
 ): Promise<void> {
-  const images = content.filter(isImageContent);
+  const blocks = Array.isArray(content) ? content.filter(isContentBlock) : [];
+  const images = blocks.filter(isImageContent);
   if (images.length === 0) return;
   const cached: Array<{
     imageKey: string;
