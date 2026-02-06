@@ -18,8 +18,14 @@ import type { TurnInterruptParams } from "../generated/v2/TurnInterruptParams";
 import type { TurnInterruptResponse } from "../generated/v2/TurnInterruptResponse";
 import type { SkillsListParams } from "../generated/v2/SkillsListParams";
 import type { SkillsListResponse } from "../generated/v2/SkillsListResponse";
+import type { SkillsRemoteReadParams } from "../generated/v2/SkillsRemoteReadParams";
+import type { SkillsRemoteReadResponse } from "../generated/v2/SkillsRemoteReadResponse";
+import type { SkillsRemoteWriteParams } from "../generated/v2/SkillsRemoteWriteParams";
+import type { SkillsRemoteWriteResponse } from "../generated/v2/SkillsRemoteWriteResponse";
 import type { ModelListParams } from "../generated/v2/ModelListParams";
 import type { ModelListResponse } from "../generated/v2/ModelListResponse";
+import type { ConfigReadParams } from "../generated/v2/ConfigReadParams";
+import type { ConfigReadResponse } from "../generated/v2/ConfigReadResponse";
 import type { ThreadArchiveParams } from "../generated/v2/ThreadArchiveParams";
 import type { ThreadArchiveResponse } from "../generated/v2/ThreadArchiveResponse";
 import type { ThreadUnarchiveParams } from "../generated/v2/ThreadUnarchiveParams";
@@ -77,6 +83,9 @@ export class BackendProcess implements vscode.Disposable {
   public onNotification: ((n: AnyServerNotification) => void) | null = null;
   public onApprovalRequest:
     | ((req: V2ApprovalRequest) => Promise<V2ApprovalDecision>)
+    | null = null;
+  public onRequestUserInput:
+    | ((req: V2ToolRequestUserInputRequest) => Promise<ToolRequestUserInputResponse>)
     | null = null;
 
   private constructor(
@@ -299,6 +308,33 @@ export class BackendProcess implements vscode.Disposable {
     });
   }
 
+  public async skillsRemoteRead(
+    params: SkillsRemoteReadParams,
+  ): Promise<SkillsRemoteReadResponse> {
+    return this.rpc.request<SkillsRemoteReadResponse>({
+      method: "skills/remote/read",
+      params,
+    });
+  }
+
+  public async skillsRemoteWrite(
+    params: SkillsRemoteWriteParams,
+  ): Promise<SkillsRemoteWriteResponse> {
+    return this.rpc.request<SkillsRemoteWriteResponse>({
+      method: "skills/remote/write",
+      params,
+    });
+  }
+
+  public async configRead(
+    params: ConfigReadParams,
+  ): Promise<ConfigReadResponse> {
+    return this.rpc.request<ConfigReadResponse>({
+      method: "config/read",
+      params,
+    });
+  }
+
   public async accountRead(
     params: GetAccountParams,
   ): Promise<GetAccountResponse> {
@@ -392,6 +428,18 @@ export class BackendProcess implements vscode.Disposable {
     }
 
     if (isV2ToolRequestUserInputRequest(req)) {
+      if (this.onRequestUserInput) {
+        try {
+          const result = await this.onRequestUserInput(req);
+          this.respondV2ToolRequestUserInput(req.id, result);
+          return;
+        } catch (err) {
+          this.output.appendLine(
+            `Failed to handle request_user_input via UI, falling back to modal: ${String(err)}`,
+          );
+        }
+      }
+
       const questions = req.params.questions.map((q) => ({
         id: q.id,
         header: q.header,

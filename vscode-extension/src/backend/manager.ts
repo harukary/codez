@@ -45,6 +45,10 @@ import type { LogoutAccountResponse } from "../generated/v2/LogoutAccountRespons
 import type { SwitchAccountParams } from "../generated/v2/SwitchAccountParams";
 import type { SwitchAccountResponse } from "../generated/v2/SwitchAccountResponse";
 import type { SkillsListEntry } from "../generated/v2/SkillsListEntry";
+import type { RemoteSkillSummary } from "../generated/v2/RemoteSkillSummary";
+import type { SkillsRemoteReadResponse } from "../generated/v2/SkillsRemoteReadResponse";
+import type { SkillsRemoteWriteResponse } from "../generated/v2/SkillsRemoteWriteResponse";
+import type { ConfigReadResponse } from "../generated/v2/ConfigReadResponse";
 import type { Thread } from "../generated/v2/Thread";
 import type { ThreadSourceKind } from "../generated/v2/ThreadSourceKind";
 import type { Turn } from "../generated/v2/Turn";
@@ -189,6 +193,12 @@ export class BackendManager implements vscode.Disposable {
         session: Session,
         req: V2ApprovalRequest,
       ) => Promise<V2ApprovalDecision>)
+    | null = null;
+  public onRequestUserInput:
+    | ((
+        session: Session,
+        req: V2ToolRequestUserInputRequest,
+      ) => Promise<{ cancelled: boolean; answersById: Record<string, string[]> }>)
     | null = null;
   public onServerEvent:
     | ((
@@ -517,6 +527,8 @@ export class BackendManager implements vscode.Disposable {
       proc.onNotification = (n) => this.onServerNotification(backendKey, n);
       proc.onApprovalRequest = async (req) =>
         this.handleApprovalRequest(backendKey, req);
+      proc.onRequestUserInput = async (req) =>
+        this.handleRequestUserInput(backendKey, req);
     })();
 
     this.startInFlight.set(
@@ -646,6 +658,7 @@ export class BackendManager implements vscode.Disposable {
 
   public async listSkillsForSession(
     session: Session,
+    opts?: { forceReload?: boolean },
   ): Promise<SkillsListEntry[]> {
     const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
     if (!folder) {
@@ -665,9 +678,84 @@ export class BackendManager implements vscode.Disposable {
 
     const res = await proc.skillsList({
       cwds: [folder.uri.fsPath],
-      forceReload: false,
+      forceReload: opts?.forceReload ?? false,
     });
     return res.data ?? [];
+  }
+
+  public async listRemoteSkillsForSession(
+    session: Session,
+  ): Promise<RemoteSkillSummary[]> {
+    if (session.backendId === "opencode") {
+      return [];
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    const res: SkillsRemoteReadResponse = await proc.skillsRemoteRead({});
+    return res.data ?? [];
+  }
+
+  public async downloadRemoteSkillForSession(
+    session: Session,
+    hazelnutId: string,
+    opts?: { isPreload?: boolean },
+  ): Promise<SkillsRemoteWriteResponse> {
+    if (session.backendId === "opencode") {
+      throw new Error("opencode backend does not support remote skills");
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    return await proc.skillsRemoteWrite({
+      hazelnutId,
+      isPreload: opts?.isPreload ?? false,
+    });
+  }
+
+  public async readConfigForSession(
+    session: Session,
+  ): Promise<ConfigReadResponse> {
+    if (session.backendId === "opencode") {
+      throw new Error("opencode backend does not support config/read");
+    }
+
+    const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
+    if (!folder) {
+      throw new Error(
+        `WorkspaceFolder not found for session: ${session.workspaceFolderUri}`,
+      );
+    }
+
+    await this.startForBackendId(folder, session.backendId);
+    const proc = this.processes.get(session.backendKey);
+    if (!proc)
+      throw new Error("Backend is not running for this workspace folder");
+
+    return await proc.configRead({
+      includeLayers: true,
+      cwd: folder.uri.fsPath,
+    });
   }
 
   public async listAgentsForSession(
@@ -3116,6 +3204,35 @@ export class BackendManager implements vscode.Disposable {
     return this.onApprovalRequest(session, req);
   }
 
+  private async handleRequestUserInput(
+    backendKey: string,
+    req: V2ToolRequestUserInputRequest,
+  ): Promise<{ answers: Record<string, { answers: string[] }> }> {
+    const session = this.sessions.getByThreadId(
+      backendKey,
+      req.params.threadId,
+    );
+    if (!session) {
+      throw new Error(
+        `Session not found for request_user_input: threadId=${req.params.threadId}`,
+      );
+    }
+    if (!this.onRequestUserInput) {
+      throw new Error("onRequestUserInput handler is not set");
+    }
+    const { cancelled, answersById } = await this.onRequestUserInput(
+      session,
+      req,
+    );
+    const answers: Record<string, { answers: string[] }> = {};
+    if (!cancelled) {
+      for (const q of req.params.questions) {
+        answers[q.id] = { answers: answersById[q.id] ?? [] };
+      }
+    }
+    return { answers };
+  }
+
   private resolveWorkspaceFolder(
     workspaceFolderUri: string,
   ): vscode.WorkspaceFolder | null {
@@ -3596,6 +3713,11 @@ type V2ApprovalRequest = Extract<
 type V2ApprovalDecision =
   | CommandExecutionApprovalDecision
   | FileChangeApprovalDecision;
+
+type V2ToolRequestUserInputRequest = Extract<
+  ServerRequest,
+  { method: "item/tool/requestUserInput" }
+>;
 
 function parseOpencodeDefaultModelKey(
   cfg: Record<string, unknown> | null,
