@@ -99,6 +99,7 @@ jobs:
       - name: bazel test //...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          CODEX_BWRAP_ENABLE_FFI: ${{ contains(matrix.target, 'unknown-linux') && '1' || '0' }}
         shell: bash
         run: |
           bazelrc_path=".github/workflows/ci.bazelrc"
