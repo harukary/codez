@@ -32,11 +32,13 @@ use crate::resume_picker::SessionSelection;
 use crate::tui;
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
+use crate::version::CODEX_CLI_VERSION;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
+use codex_core::config::CONFIG_TOML_FILE;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
@@ -394,6 +396,18 @@ fn migration_prompt_hidden(config: &Config, migration_config_key: &str) -> bool 
     }
 }
 
+fn project_local_config_path_for_writes(config: &Config) -> Option<PathBuf> {
+    let user_config_path = config.codex_home.join(CONFIG_TOML_FILE);
+    let project_config_path = config.cwd.join(".codex").join(CONFIG_TOML_FILE);
+    if project_config_path == user_config_path {
+        return None;
+    }
+    if project_config_path.is_file() {
+        return Some(project_config_path);
+    }
+    None
+}
+
 fn target_preset_for_upgrade<'a>(
     available_models: &'a [ModelPreset],
     target_model: &str,
@@ -410,6 +424,10 @@ async fn handle_model_migration_prompt_if_needed(
     app_event_tx: &AppEventSender,
     available_models: Vec<ModelPreset>,
 ) -> Option<AppExitInfo> {
+    if CODEX_CLI_VERSION.contains("-codez.") {
+        return None;
+    }
+
     let upgrade = available_models
         .iter()
         .find(|preset| preset.model == model)
@@ -1982,7 +2000,10 @@ impl App {
                     )
                 });
                 let mut builder = ConfigEditsBuilder::new(&self.config.codex_home)
-                    .with_profile(self.active_profile.as_deref());
+                    .with_profile(self.active_profile.as_deref())
+                    .with_config_path(
+                        project_local_config_path_for_writes(&self.config).as_deref(),
+                    );
                 for (feature, enabled) in &updates {
                     let feature_key = feature.key();
                     if *enabled {

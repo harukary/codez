@@ -255,10 +255,12 @@ impl ConfigService {
             None => allowed_path.clone(),
         };
 
-        if !paths_match(&allowed_path, &provided_path) {
+        let matches_user = paths_match(&allowed_path, &provided_path);
+        let matches_project = is_project_config_toml_path(&provided_path);
+        if !matches_user && !matches_project {
             return Err(ConfigServiceError::write(
                 ConfigWriteErrorCode::ConfigLayerReadonly,
-                "Only writes to the user config are allowed",
+                "Only writes to the user config or */.codex/config.toml are allowed",
             ));
         }
 
@@ -591,6 +593,17 @@ fn paths_match(expected: impl AsRef<Path>, provided: impl AsRef<Path>) -> bool {
     } else {
         expected.as_ref() == provided.as_ref()
     }
+}
+
+fn is_project_config_toml_path(path: &AbsolutePathBuf) -> bool {
+    path.as_path()
+        .file_name()
+        .is_some_and(|name| name == CONFIG_TOML_FILE)
+        && path
+            .as_path()
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|name| name == ".codex")
 }
 
 fn value_at_path<'a>(root: &'a TomlValue, segments: &[String]) -> Option<&'a TomlValue> {
@@ -988,6 +1001,57 @@ remote_compaction = true
         assert!(
             contents.contains("model = \"gpt-new\""),
             "config.toml should be updated even when file_path is omitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_value_allows_project_local_codex_config_path() {
+        let tmp = tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "").unwrap();
+
+        let project_config = tmp.path().join(".codex").join(CONFIG_TOML_FILE);
+        std::fs::create_dir_all(project_config.parent().expect("parent")).unwrap();
+        std::fs::write(&project_config, "").unwrap();
+
+        let service = ConfigService::new_with_defaults(tmp.path().to_path_buf());
+        service
+            .write_value(ConfigValueWriteParams {
+                file_path: Some(project_config.display().to_string()),
+                key_path: "features.shell_snapshot".to_string(),
+                value: serde_json::json!(true),
+                merge_strategy: MergeStrategy::Upsert,
+                expected_version: None,
+            })
+            .await
+            .expect("write succeeds");
+
+        let contents = std::fs::read_to_string(project_config).expect("read config");
+        assert!(contents.contains("shell_snapshot = true"));
+    }
+
+    #[tokio::test]
+    async fn write_value_rejects_non_user_non_project_config_path() {
+        let tmp = tempdir().expect("tempdir");
+        std::fs::write(tmp.path().join(CONFIG_TOML_FILE), "").unwrap();
+
+        let disallowed = tmp.path().join("other.toml");
+        std::fs::write(&disallowed, "").unwrap();
+
+        let service = ConfigService::new_with_defaults(tmp.path().to_path_buf());
+        let err = service
+            .write_value(ConfigValueWriteParams {
+                file_path: Some(disallowed.display().to_string()),
+                key_path: "model".to_string(),
+                value: serde_json::json!("gpt-5"),
+                merge_strategy: MergeStrategy::Replace,
+                expected_version: None,
+            })
+            .await
+            .expect_err("write should fail");
+
+        assert_eq!(
+            err.write_error_code(),
+            Some(ConfigWriteErrorCode::ConfigLayerReadonly)
         );
     }
 

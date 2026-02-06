@@ -633,12 +633,21 @@ pub fn apply_blocking(
     profile: Option<&str>,
     edits: &[ConfigEdit],
 ) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    apply_blocking_to_path(&config_path, profile, edits)
+}
+
+/// Persist edits to an explicit config file using a blocking strategy.
+pub fn apply_blocking_to_path(
+    config_path: &Path,
+    profile: Option<&str>,
+    edits: &[ConfigEdit],
+) -> anyhow::Result<()> {
     if edits.is_empty() {
         return Ok(());
     }
 
-    let config_path = codex_home.join(CONFIG_TOML_FILE);
-    let write_paths = resolve_symlink_write_paths(&config_path)?;
+    let write_paths = resolve_symlink_write_paths(config_path)?;
     let serialized = match write_paths.read_path {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(contents) => contents,
@@ -687,9 +696,22 @@ pub async fn apply(
     profile: Option<&str>,
     edits: Vec<ConfigEdit>,
 ) -> anyhow::Result<()> {
-    let codex_home = codex_home.to_path_buf();
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
     let profile = profile.map(ToOwned::to_owned);
-    task::spawn_blocking(move || apply_blocking(&codex_home, profile.as_deref(), &edits))
+    task::spawn_blocking(move || apply_blocking_to_path(&config_path, profile.as_deref(), &edits))
+        .await
+        .context("config persistence task panicked")?
+}
+
+/// Persist edits to an explicit config file asynchronously.
+pub async fn apply_to_path(
+    config_path: &Path,
+    profile: Option<&str>,
+    edits: Vec<ConfigEdit>,
+) -> anyhow::Result<()> {
+    let config_path = config_path.to_path_buf();
+    let profile = profile.map(ToOwned::to_owned);
+    task::spawn_blocking(move || apply_blocking_to_path(&config_path, profile.as_deref(), &edits))
         .await
         .context("config persistence task panicked")?
 }
@@ -698,6 +720,7 @@ pub async fn apply(
 #[derive(Default)]
 pub struct ConfigEditsBuilder {
     codex_home: PathBuf,
+    config_path: Option<PathBuf>,
     profile: Option<String>,
     edits: Vec<ConfigEdit>,
 }
@@ -706,9 +729,15 @@ impl ConfigEditsBuilder {
     pub fn new(codex_home: &Path) -> Self {
         Self {
             codex_home: codex_home.to_path_buf(),
+            config_path: None,
             profile: None,
             edits: Vec::new(),
         }
+    }
+
+    pub fn with_config_path(mut self, config_path: Option<&Path>) -> Self {
+        self.config_path = config_path.map(Path::to_path_buf);
+        self
     }
 
     pub fn with_profile(mut self, profile: Option<&str>) -> Self {
@@ -808,16 +837,24 @@ impl ConfigEditsBuilder {
 
     /// Apply edits on a blocking thread.
     pub fn apply_blocking(self) -> anyhow::Result<()> {
-        apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
+        if let Some(config_path) = self.config_path {
+            apply_blocking_to_path(&config_path, self.profile.as_deref(), &self.edits)
+        } else {
+            apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
+        }
     }
 
     /// Apply edits asynchronously via a blocking offload.
     pub async fn apply(self) -> anyhow::Result<()> {
-        task::spawn_blocking(move || {
-            apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
-        })
-        .await
-        .context("config persistence task panicked")?
+        if let Some(config_path) = self.config_path {
+            apply_to_path(&config_path, self.profile.as_deref(), self.edits).await
+        } else {
+            task::spawn_blocking(move || {
+                apply_blocking(&self.codex_home, self.profile.as_deref(), &self.edits)
+            })
+            .await
+            .context("config persistence task panicked")?
+        }
     }
 }
 

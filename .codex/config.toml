@@ -14,8 +14,10 @@ streamable_shell = true
 # tui2 = true
 unified_exec = true
 view_image_tool = true
-web_search_request = true
 ask_user_question_tool = true
+shell_snapshot = true
+collab = true
+apps = true
 
 # repo-local Hooks (Codez)
 # - Each hook receives a single JSON payload via stdin.
