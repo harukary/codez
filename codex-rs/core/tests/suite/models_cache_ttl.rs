@@ -165,6 +165,10 @@ async fn uses_cache_when_version_matches() -> Result<()> {
         });
 
     let test = builder.build(&server).await?;
+    // `build()` can take long enough that a cache written in the pre-build hook becomes stale
+    // under the default TTL. Refresh it right before the first read we want to exercise.
+    let cache_path = test.config.codex_home.join(CACHE_FILE);
+    rewrite_cache_timestamp(&cache_path, Utc::now()).await?;
     let models_manager = test.thread_manager.get_models_manager();
     let models = models_manager
         .list_models(&test.config, RefreshStrategy::OnlineIfUncached)
