@@ -2141,7 +2141,7 @@ export function activate(context: vscode.ExtensionContext): void {
         });
 
         const candidates: Array<{ name: string | null; label: string }> = [
-          { name: null, label: "default" },
+          { name: null, label: "Default" },
           ...sorted.map((p) => ({
             name: p.name,
             label: p.name,
@@ -3225,9 +3225,10 @@ async function sendUserInput(
       chatView?.refresh();
       throw new Error(msg);
     }
-    if (!preset.model) {
+    const resolvedModel = preset.model ?? modelState?.model ?? null;
+    if (!resolvedModel) {
       rt.sending = false;
-      const msg = `collaboration preset '${preset.name}' has no model; cannot apply.`;
+      const msg = `collaboration preset '${preset.name}' has no model and no active model is selected; cannot apply.`;
       upsertBlock(session.id, {
         id: newLocalId("collabInvalid"),
         type: "error",
@@ -3241,7 +3242,7 @@ async function sendUserInput(
     collaborationMode = {
       mode,
       settings: {
-        model: preset.model,
+        model: resolvedModel,
         reasoning_effort: preset.reasoning_effort ?? null,
         developer_instructions: preset.developer_instructions ?? null,
       },
@@ -3784,7 +3785,7 @@ async function handleSlashCommand(
 
     const items: Array<vscode.QuickPickItem & { presetName: string | null }> = [
       {
-        label: "default",
+        label: "Default",
         description: "Disable collaboration preset (use normal settings)",
         presetName: null,
       },
@@ -5610,7 +5611,7 @@ function buildChatState(): ChatViewState {
       activeRaw.collaborationModePresetName &&
       activeRaw.collaborationModePresetName.trim()
         ? activeRaw.collaborationModePresetName.trim()
-        : "default",
+        : "Default",
     approvals: [...rt.pendingApprovals.entries()].map(([requestKey, v]) => ({
       requestKey,
       title: v.title,

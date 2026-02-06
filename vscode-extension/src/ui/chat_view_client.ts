@@ -3624,7 +3624,7 @@ function main(): void {
       typeof s.collaborationModeLabel === "string" &&
       s.collaborationModeLabel.trim()
         ? s.collaborationModeLabel.trim()
-        : "default";
+        : "Default";
     modeBadgeEl.textContent = modeLabel;
     modeBadgeEl.style.display = s.activeSession ? "" : "none";
     const models = s.models ?? [];
