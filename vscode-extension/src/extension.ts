@@ -4894,6 +4894,7 @@ function hasConversationBlocks(rt: SessionRuntime): boolean {
       case "command":
       case "fileChange":
       case "mcp":
+      case "collab":
       case "webSearch":
       case "reasoning":
       case "step":
@@ -6261,6 +6262,73 @@ function applyItemLifecycle(
           item.result.content,
         );
       }
+      break;
+    }
+    case "collabAgentToolCall": {
+      const tool = String(item.tool ?? "");
+      const senderThreadId = String(item.senderThreadId ?? "");
+      const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+        ? item.receiverThreadIds.map((id) => String(id))
+        : [];
+      const prompt =
+        typeof item.prompt === "string" ? item.prompt.trim() : "";
+      const agentsStates =
+        item.agentsStates && typeof item.agentsStates === "object"
+          ? (item.agentsStates as Record<
+              string,
+              { status?: string; message?: string | null }
+            >)
+          : {};
+
+      const detailLines: string[] = [];
+      if (tool) detailLines.push(`tool: ${tool}`);
+      if (senderThreadId) detailLines.push(`sender: ${senderThreadId}`);
+      if (receiverThreadIds.length > 0) {
+        detailLines.push(`receivers: ${receiverThreadIds.join(", ")}`);
+      }
+
+      const agentStateLines = Object.keys(agentsStates)
+        .sort()
+        .map((id) => {
+          const state = agentsStates[id] ?? {};
+          const status =
+            typeof state.status === "string" ? state.status : "";
+          const message =
+            typeof state.message === "string" ? state.message.trim() : "";
+          if (!status && !message) return "";
+          return message ? `${id}: ${status} - ${message}` : `${id}: ${status}`;
+        })
+        .filter((line) => line.trim().length > 0);
+      if (agentStateLines.length > 0) {
+        detailLines.push("");
+        detailLines.push("agents:");
+        detailLines.push(...agentStateLines);
+      }
+
+      if (prompt) {
+        detailLines.push("");
+        detailLines.push("prompt:");
+        detailLines.push(prompt);
+      }
+
+      const block = getOrCreateBlock(rt, item.id, () => ({
+        id: item.id,
+        type: "collab",
+        title: "Sub-agent",
+        status: item.status,
+        tool,
+        senderThreadId,
+        receiverThreadIds,
+        detail: detailLines.join("\n"),
+      }));
+      if (block.type === "collab") {
+        block.status = item.status;
+        block.tool = tool;
+        block.senderThreadId = senderThreadId;
+        block.receiverThreadIds = receiverThreadIds;
+        block.detail = detailLines.join("\n");
+      }
+      chatView?.postBlockUpsert(sessionId, block);
       break;
     }
     case "webSearch": {
@@ -8135,6 +8203,7 @@ function hydrateRuntimeFromThread(
       case "command":
       case "fileChange":
       case "mcp":
+      case "collab":
       case "step":
       case "webSearch":
       case "reasoning":

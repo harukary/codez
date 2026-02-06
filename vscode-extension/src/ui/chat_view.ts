@@ -108,6 +108,16 @@ export type ChatBlock =
     }
   | {
       id: string;
+      type: "collab";
+      title: string;
+      status: string;
+      tool: string;
+      senderThreadId: string;
+      receiverThreadIds: string[];
+      detail: string;
+    }
+  | {
+      id: string;
       type: "step";
       title: string;
       status: "inProgress" | "completed" | "failed";
@@ -1673,6 +1683,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .tool { background: rgba(153, 69, 255, 0.10); }
       .tool.changes { background: rgba(255, 140, 0, 0.10); }
       .tool.mcp { background: rgba(0, 200, 170, 0.08); }
+      .tool.collab { background: rgba(0, 150, 200, 0.12); border-color: rgba(0, 150, 200, 0.35); }
       .tool.webSearch { background: rgba(0, 180, 255, 0.10); border-color: rgba(0, 180, 255, 0.22); }
       .tool.step { background: rgba(153, 69, 255, 0.06); border-color: rgba(153, 69, 255, 0.18); }
       details.toolChild { margin: 6px 0 0 12px; background: rgba(127,127,127,0.04); }

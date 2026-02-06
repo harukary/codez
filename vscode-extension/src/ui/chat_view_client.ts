@@ -133,6 +133,16 @@ type ChatBlock =
     }
   | {
       id: string;
+      type: "collab";
+      title: string;
+      status: string;
+      tool: string;
+      senderThreadId: string;
+      receiverThreadIds: string[];
+      detail: string;
+    }
+  | {
+      id: string;
       type: "step";
       title: string;
       status: "inProgress" | "completed" | "failed";
@@ -5108,6 +5118,36 @@ function main(): void {
         );
         const meta = ensureMeta(det, "meta");
         const metaText = [block.server, block.tool].filter(Boolean).join(" ");
+        if (meta.textContent !== metaText) meta.textContent = metaText;
+        setStatusIcon(det, block.status);
+        const pre = ensurePre(det, "body");
+        const text = block.detail || "";
+        if (pre.textContent !== text) pre.textContent = text;
+        continue;
+      }
+
+      if (block.type === "collab") {
+        const id = "collab:" + block.id;
+        const summaryText =
+          block.title ||
+          (block.tool ? `Sub-agent: ${block.tool}` : "Sub-agent");
+        const det = ensureDetails(
+          id,
+          "tool collab",
+          block.status === "inProgress",
+          summaryText,
+          id,
+        );
+        const meta = ensureMeta(det, "meta");
+        const receivers =
+          Array.isArray(block.receiverThreadIds) &&
+          block.receiverThreadIds.length > 0
+            ? block.receiverThreadIds.join(", ")
+            : "";
+        const metaParts = [block.tool, block.senderThreadId, receivers].filter(
+          (p) => String(p || "").trim().length > 0,
+        );
+        const metaText = metaParts.join(" • ");
         if (meta.textContent !== metaText) meta.textContent = metaText;
         setStatusIcon(det, block.status);
         const pre = ensurePre(det, "body");
