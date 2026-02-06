@@ -268,9 +268,13 @@ impl ConfigService {
             .load_thread_agnostic_config()
             .await
             .map_err(|err| ConfigServiceError::io("failed to load configuration", err))?;
-        let user_layer = match layers.get_user_layer() {
-            Some(layer) => Cow::Borrowed(layer),
-            None => Cow::Owned(create_empty_user_layer(&allowed_path).await?),
+        let user_layer = if matches_project {
+            Cow::Owned(create_empty_user_layer(&provided_path).await?)
+        } else {
+            match layers.get_user_layer() {
+                Some(layer) => Cow::Borrowed(layer),
+                None => Cow::Owned(create_empty_user_layer(&allowed_path).await?),
+            }
         };
 
         if let Some(expected) = expected_version.as_deref()
@@ -345,6 +349,7 @@ impl ConfigService {
 
         if !config_edits.is_empty() {
             ConfigEditsBuilder::new(&self.codex_home)
+                .with_config_path(matches_project.then_some(provided_path.as_path()))
                 .with_edits(config_edits)
                 .apply()
                 .await
