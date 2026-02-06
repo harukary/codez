@@ -242,6 +242,13 @@ type RequestUserInputQuestion = {
   options?: RequestUserInputOption[] | null;
 };
 
+type PendingRequestUserInput = {
+  sessionId: string;
+  requestKey: string;
+  questions: RequestUserInputQuestion[];
+  params: unknown;
+};
+
 const WORKTREE_COLORS = [
   "#1f6feb",
   "#2ea043",
@@ -367,6 +374,48 @@ function main(): void {
     otherTextById: Record<string, string>;
   } | null = null;
 
+  const pendingRequestUserInputBySessionId = new Map<
+    string,
+    PendingRequestUserInput[]
+  >();
+
+  const enqueueRequestUserInput = (p: PendingRequestUserInput): void => {
+    const q = pendingRequestUserInputBySessionId.get(p.sessionId) ?? [];
+    q.push(p);
+    pendingRequestUserInputBySessionId.set(p.sessionId, q);
+  };
+
+  const dequeueRequestUserInputForSession = (
+    sessionId: string,
+  ): PendingRequestUserInput | null => {
+    const q = pendingRequestUserInputBySessionId.get(sessionId) ?? [];
+    const next = q.shift() ?? null;
+    if (q.length === 0) pendingRequestUserInputBySessionId.delete(sessionId);
+    else pendingRequestUserInputBySessionId.set(sessionId, q);
+    return next;
+  };
+
+  const hasPendingRequestUserInput = (sessionId: string): boolean => {
+    const q = pendingRequestUserInputBySessionId.get(sessionId);
+    return Array.isArray(q) && q.length > 0;
+  };
+
+  const maybeStartRequestUserInputForActiveSession = (): void => {
+    if (requestUserInputState) return;
+    const activeId = state.activeSession?.id ?? null;
+    if (!activeId) return;
+    const pending = dequeueRequestUserInputForSession(activeId);
+    if (!pending) return;
+    requestUserInputState = {
+      requestKey: pending.requestKey,
+      questions: pending.questions,
+      index: 0,
+      answersById: {},
+      otherTextById: {},
+    };
+    renderRequestUserInput();
+  };
+
   const disableComposer = (disabled: boolean): void => {
     inputEl.disabled = disabled;
     imageInput.disabled = disabled;
@@ -398,6 +447,7 @@ function main(): void {
     requestUserInputEl.innerHTML = "";
     disableComposer(false);
     inputEl.focus();
+    maybeStartRequestUserInputForActiveSession();
   };
 
   const renderRequestUserInput = (): void => {
@@ -3935,6 +3985,7 @@ function main(): void {
         const isUnread = unread.has(sess.id);
         const isRunning = running.has(sess.id);
         const isActive = activeId === sess.id;
+        const needsInput = hasPendingRequestUserInput(sess.id);
         const displayIdx = displayIndexBySessionId.get(sess.id) ?? -1;
         const dt = getSessionDisplayTitle(sess, displayIdx);
         return [
@@ -3945,6 +3996,7 @@ function main(): void {
           isActive ? "a" : "",
           isRunning ? "r" : "",
           isUnread ? "u" : "",
+          needsInput ? "i" : "",
         ].join("\t");
       })
       .join("\n");
@@ -3964,6 +4016,7 @@ function main(): void {
         const isUnread = unread.has(sess.id);
         const isRunning = running.has(sess.id);
         const isActive = activeId === sess.id;
+        const needsInput = hasPendingRequestUserInput(sess.id);
         const displayIdx = displayIndexBySessionId.get(sess.id) ?? -1;
         const dt = getSessionDisplayTitle(sess, displayIdx);
 
@@ -4069,9 +4122,13 @@ function main(): void {
         if (!existing) {
           tabElBySessionId.set(sess.id, div);
           div.draggable = true;
-          div.addEventListener("click", () =>
-            vscode.postMessage({ type: "selectSession", sessionId: sess.id }),
-          );
+          div.addEventListener("click", () => {
+            if (requestUserInputState) {
+              showToast("info", "Answer the questions to continue.");
+              return;
+            }
+            vscode.postMessage({ type: "selectSession", sessionId: sess.id });
+          });
           div.addEventListener("contextmenu", (e) => {
             e.preventDefault();
             vscode.postMessage({ type: "sessionMenu", sessionId: sess.id });
@@ -4135,6 +4192,7 @@ function main(): void {
         div.className =
           "tab" +
           (isActive ? " active" : "") +
+          (needsInput ? " needsInput" : "") +
           (isRunning ? " running" : isUnread ? " unread" : "");
         if (div.textContent !== dt.label) div.textContent = dt.label;
         if (div.title !== dt.tooltip) div.title = dt.tooltip;
@@ -4188,6 +4246,8 @@ function main(): void {
         }
       }
     }
+
+    maybeStartRequestUserInputForActiveSession();
 
     const approvals = s.approvals || [];
     const approvalsVisible = Boolean(s.activeSession && approvals.length > 0);
@@ -5932,21 +5992,20 @@ function main(): void {
         typeof (anyMsg as any).sessionId === "string"
           ? (anyMsg as any).sessionId
           : null;
-      if (sessionId && state.activeSession?.id !== sessionId) return;
+      if (!sessionId) return;
       const params = (anyMsg as any).params;
       const questions = Array.isArray(params?.questions)
         ? (params.questions as RequestUserInputQuestion[])
         : [];
       if (questions.length === 0) return;
 
-      requestUserInputState = {
+      enqueueRequestUserInput({
+        sessionId,
         requestKey,
         questions,
-        index: 0,
-        answersById: {},
-        otherTextById: {},
-      };
-      renderRequestUserInput();
+        params,
+      });
+      maybeStartRequestUserInputForActiveSession();
       return;
     }
     if (anyMsg.type === "blockUpsert") {

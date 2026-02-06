@@ -1646,6 +1646,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .dropBefore { outline: 2px solid rgba(0, 120, 212, 0.85); outline-offset: 2px; }
       .dropAfter { outline: 2px solid rgba(0, 120, 212, 0.85); outline-offset: 2px; }
       .tab.active { border-color: rgba(0, 120, 212, 0.9); }
+      .tab.needsInput { border-color: var(--wt-color); box-shadow: 0 0 0 1px var(--wt-color) inset; }
+      .tab.needsInput::after { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 999px; background: var(--wt-color); margin-left: 6px; transform: translateY(-1px); }
       .tab.unread { background: rgba(255, 185, 0, 0.14); }
       .tab.running { background: rgba(0, 120, 212, 0.12); }
       .log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; }
