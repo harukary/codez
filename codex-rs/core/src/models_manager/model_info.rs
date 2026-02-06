@@ -34,6 +34,14 @@ const GPT_5_2_CODEX_PERSONALITY_FRIENDLY: &str =
 const GPT_5_2_CODEX_PERSONALITY_PRAGMATIC: &str =
     include_str!("../../templates/personalities/gpt-5.2-codex_pragmatic.md");
 
+const GPT_5_3_CODEX_INSTRUCTIONS: &str = include_str!("../../gpt-5.3-codex_prompt.md");
+const GPT_5_3_CODEX_INSTRUCTIONS_TEMPLATE: &str =
+    include_str!("../../templates/model_instructions/gpt-5.3-codex_instructions_template.md");
+const GPT_5_3_CODEX_PERSONALITY_FRIENDLY: &str =
+    include_str!("../../templates/personalities/gpt-5.3-codex_friendly.md");
+const GPT_5_3_CODEX_PERSONALITY_PRAGMATIC: &str =
+    include_str!("../../templates/personalities/gpt-5.3-codex_pragmatic.md");
+
 pub(crate) const CONTEXT_WINDOW_272K: i64 = 272_000;
 
 macro_rules! model_info {
@@ -204,6 +212,28 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             shell_type: ConfigShellToolType::UnifiedExec,
             supports_parallel_tool_calls: true,
             context_window: Some(CONTEXT_WINDOW_272K),
+        )
+    } else if slug.starts_with("gpt-5.3-codex") {
+        model_info!(
+            slug,
+            base_instructions: GPT_5_3_CODEX_INSTRUCTIONS.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: true,
+            support_verbosity: false,
+            truncation_policy: TruncationPolicyConfig::tokens(10_000),
+            context_window: Some(CONTEXT_WINDOW_272K),
+            supported_reasoning_levels: supported_reasoning_level_low_medium_high_xhigh(),
+            base_instructions: GPT_5_3_CODEX_INSTRUCTIONS.to_string(),
+            model_messages: Some(ModelMessages {
+                instructions_template: Some(GPT_5_3_CODEX_INSTRUCTIONS_TEMPLATE.to_string()),
+                instructions_variables: Some(ModelInstructionsVariables {
+                    personality_default: Some("".to_string()),
+                    personality_friendly: Some(GPT_5_3_CODEX_PERSONALITY_FRIENDLY.to_string()),
+                    personality_pragmatic: Some(GPT_5_3_CODEX_PERSONALITY_PRAGMATIC.to_string()),
+                }),
+            }),
         )
     } else if slug.starts_with("gpt-5.2-codex") || slug.starts_with("bengalfox") {
         model_info!(

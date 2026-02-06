@@ -362,6 +362,7 @@ export class OpencodeHttpClient {
           // For opencode, the model selection UI only carries a single string.
           // Encode `providerID:modelID` so we can recover both on send.
           model: key,
+          upgrade: null,
           displayName: `${providerName} / ${m.name}`,
           description: "",
           supportedReasoningEfforts: effortsInOrder.map((effort) => ({
@@ -369,6 +370,7 @@ export class OpencodeHttpClient {
             description: "",
           })),
           defaultReasoningEffort: "none",
+          inputModalities: ["text"],
           supportsPersonality: false,
           isDefault: defaultModelID ? defaultModelID === m.id : false,
         });

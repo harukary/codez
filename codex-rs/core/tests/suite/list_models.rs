@@ -52,6 +52,7 @@ async fn list_models_returns_chatgpt_models() -> Result<()> {
 
 fn expected_models_for_api_key() -> Vec<ModelPreset> {
     vec![
+        gpt_53_codex(),
         gpt_52_codex(),
         gpt_5_2(),
         gpt_5_1_codex_max(),
@@ -70,11 +71,11 @@ fn expected_models_for_chatgpt() -> Vec<ModelPreset> {
     expected_models_for_api_key()
 }
 
-fn gpt_52_codex() -> ModelPreset {
+fn gpt_53_codex() -> ModelPreset {
     ModelPreset {
-        id: "gpt-5.2-codex".to_string(),
-        model: "gpt-5.2-codex".to_string(),
-        display_name: "gpt-5.2-codex".to_string(),
+        id: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.3-codex".to_string(),
+        display_name: "gpt-5.3-codex".to_string(),
         description: "Latest frontier agentic coding model.".to_string(),
         default_reasoning_effort: ReasoningEffort::Medium,
         supported_reasoning_efforts: vec![
@@ -98,6 +99,59 @@ fn gpt_52_codex() -> ModelPreset {
         supports_personality: false,
         is_default: true,
         upgrade: None,
+        show_in_picker: true,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    }
+}
+
+fn gpt_52_codex() -> ModelPreset {
+    ModelPreset {
+        id: "gpt-5.2-codex".to_string(),
+        model: "gpt-5.2-codex".to_string(),
+        display_name: "gpt-5.2-codex".to_string(),
+        description: "Frontier agentic coding model.".to_string(),
+        default_reasoning_effort: ReasoningEffort::Medium,
+        supported_reasoning_efforts: vec![
+            effort(
+                ReasoningEffort::Low,
+                "Fast responses with lighter reasoning",
+            ),
+            effort(
+                ReasoningEffort::Medium,
+                "Balances speed and reasoning depth for everyday tasks",
+            ),
+            effort(
+                ReasoningEffort::High,
+                "Greater reasoning depth for complex problems",
+            ),
+            effort(
+                ReasoningEffort::XHigh,
+                "Extra high reasoning depth for complex problems",
+            ),
+        ],
+        supports_personality: false,
+        is_default: false,
+        upgrade: Some(ModelUpgrade {
+            id: "gpt-5.3-codex".to_string(),
+            reasoning_effort_mapping: None,
+            migration_config_key: "gpt-5.3-codex".to_string(),
+            model_link: Some("https://openai.com/index/introducing-gpt-5-3-codex".to_string()),
+            upgrade_copy: Some(
+                "Codex is now powered by gpt-5.3-codex, our latest frontier agentic coding model. It is smarter and faster than its predecessors and capable of long-running project-scale work."
+                    .to_string(),
+            ),
+            migration_markdown: Some(
+                indoc! {r#"
+                    **Codex just got an upgrade. Introducing {model_to}.**
+
+                    Codex is now powered by gpt-5.3-codex, our latest frontier agentic coding model. It is smarter and faster than its predecessors and capable of long-running project-scale work. Learn more about {model_to} at https://openai.com/index/introducing-gpt-5-3-codex
+
+                    You can continue using {model_from} if you prefer.
+                "#}
+                .to_string(),
+            ),
+        }),
         show_in_picker: true,
         supported_in_api: true,
         input_modalities: default_input_modalities(),
@@ -131,7 +185,7 @@ fn gpt_5_1_codex_max() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5.1-codex-max",
             HashMap::from([
                 (ReasoningEffort::Low, ReasoningEffort::Low),
@@ -167,7 +221,7 @@ fn gpt_5_1_codex_mini() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5.1-codex-mini",
             HashMap::from([
                 (ReasoningEffort::High, ReasoningEffort::High),
@@ -213,7 +267,7 @@ fn gpt_5_2() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5.2",
             HashMap::from([
                 (ReasoningEffort::High, ReasoningEffort::High),
@@ -321,7 +375,7 @@ fn gpt_5_codex() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5-codex",
             HashMap::from([
                 (ReasoningEffort::Minimal, ReasoningEffort::Low),
@@ -357,7 +411,7 @@ fn gpt_5_codex_mini() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5-codex-mini",
             HashMap::from([
                 (ReasoningEffort::None, ReasoningEffort::Medium),
@@ -397,7 +451,7 @@ fn gpt_5_1_codex() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5.1-codex",
             HashMap::from([
                 (ReasoningEffort::Minimal, ReasoningEffort::Low),
@@ -441,7 +495,7 @@ fn gpt_5() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5",
             HashMap::from([
                 (ReasoningEffort::XHigh, ReasoningEffort::High),
@@ -481,7 +535,7 @@ fn gpt_5_1() -> ModelPreset {
         ],
         supports_personality: false,
         is_default: false,
-        upgrade: Some(gpt52_codex_upgrade(
+        upgrade: Some(gpt53_codex_upgrade(
             "gpt-5.1",
             HashMap::from([
                 (ReasoningEffort::None, ReasoningEffort::Low),
@@ -498,21 +552,24 @@ fn gpt_5_1() -> ModelPreset {
     }
 }
 
-fn gpt52_codex_upgrade(
+fn gpt53_codex_upgrade(
     migration_config_key: &str,
     reasoning_effort_mapping: HashMap<ReasoningEffort, ReasoningEffort>,
 ) -> ModelUpgrade {
     ModelUpgrade {
-        id: "gpt-5.2-codex".to_string(),
+        id: "gpt-5.3-codex".to_string(),
         reasoning_effort_mapping: Some(reasoning_effort_mapping),
         migration_config_key: migration_config_key.to_string(),
-        model_link: None,
-        upgrade_copy: None,
+        model_link: Some("https://openai.com/index/introducing-gpt-5-3-codex".to_string()),
+        upgrade_copy: Some(
+            "Codex is now powered by gpt-5.3-codex, our latest frontier agentic coding model. It is smarter and faster than its predecessors and capable of long-running project-scale work."
+                .to_string(),
+        ),
         migration_markdown: Some(
             indoc! {r#"
                 **Codex just got an upgrade. Introducing {model_to}.**
 
-                Codex is now powered by {model_to}, our latest frontier agentic coding model. It is smarter and faster than its predecessors and capable of long-running project-scale work. Learn more about {model_to} at https://openai.com/index/introducing-gpt-5-2-codex
+                Codex is now powered by {model_to}, our latest frontier agentic coding model. It is smarter and faster than its predecessors and capable of long-running project-scale work. Learn more about {model_to} at https://openai.com/index/introducing-gpt-5-3-codex
 
                 You can continue using {model_from} if you prefer.
             "#}
