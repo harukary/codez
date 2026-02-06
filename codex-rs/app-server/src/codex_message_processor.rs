@@ -9,7 +9,9 @@ use chrono::DateTime;
 use chrono::SecondsFormat;
 use chrono::Utc;
 use codex_app_server_protocol::Account;
+use codex_app_server_protocol::AccountKind as ApiAccountKind;
 use codex_app_server_protocol::AccountLoginCompletedNotification;
+use codex_app_server_protocol::AccountSummary as ApiAccountSummary;
 use codex_app_server_protocol::AccountUpdatedNotification;
 use codex_app_server_protocol::AddConversationListenerParams;
 use codex_app_server_protocol::AddConversationSubscriptionResponse;
@@ -52,6 +54,7 @@ use codex_app_server_protocol::GitInfo as ApiGitInfo;
 use codex_app_server_protocol::InputItem as WireInputItem;
 use codex_app_server_protocol::InterruptConversationParams;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::ListAccountsResponse;
 use codex_app_server_protocol::ListConversationsParams;
 use codex_app_server_protocol::ListConversationsResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
@@ -101,9 +104,13 @@ use codex_app_server_protocol::SkillsRemoteReadParams;
 use codex_app_server_protocol::SkillsRemoteReadResponse;
 use codex_app_server_protocol::SkillsRemoteWriteParams;
 use codex_app_server_protocol::SkillsRemoteWriteResponse;
+use codex_app_server_protocol::SwitchAccountParams;
+use codex_app_server_protocol::SwitchAccountResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
+use codex_app_server_protocol::ThreadCompactParams;
+use codex_app_server_protocol::ThreadCompactResponse;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadForkParams;
@@ -471,6 +478,9 @@ impl CodexMessageProcessor {
             ClientRequest::ThreadCompactStart { request_id, params } => {
                 self.thread_compact_start(request_id, params).await;
             }
+            ClientRequest::ThreadCompact { request_id, params } => {
+                self.thread_compact(request_id, params).await;
+            }
             ClientRequest::ThreadRollback { request_id, params } => {
                 self.thread_rollback(request_id, params).await;
             }
@@ -563,6 +573,15 @@ impl CodexMessageProcessor {
             }
             ClientRequest::GetAccount { request_id, params } => {
                 self.get_account(request_id, params).await;
+            }
+            ClientRequest::ListAccounts {
+                request_id,
+                params: _,
+            } => {
+                self.list_accounts(request_id).await;
+            }
+            ClientRequest::SwitchAccount { request_id, params } => {
+                self.switch_account(request_id, params).await;
             }
             ClientRequest::ResumeConversation { request_id, params } => {
                 self.handle_resume_conversation(request_id, params).await;
@@ -781,6 +800,7 @@ impl CodexMessageProcessor {
                         .auth_cached()
                         .as_ref()
                         .map(CodexAuth::api_auth_mode),
+                    active_account: self.active_account_name(),
                 };
                 self.outgoing
                     .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
@@ -954,6 +974,7 @@ impl CodexMessageProcessor {
                     let cloud_requirements = self.cloud_requirements.clone();
                     let chatgpt_base_url = self.config.chatgpt_base_url.clone();
                     let cli_overrides = self.cli_overrides.clone();
+                    let codex_home = self.config.codex_home.clone();
                     let auth_url = server.auth_url.clone();
                     tokio::spawn(async move {
                         let (success, error_msg) = match tokio::time::timeout(
@@ -999,8 +1020,17 @@ impl CodexMessageProcessor {
                                 .auth_cached()
                                 .as_ref()
                                 .map(CodexAuth::api_auth_mode);
+                            let active_account =
+                                match codex_core::accounts::resolve_active_account(&codex_home) {
+                                    Ok(name) => name,
+                                    Err(err) => {
+                                        warn!("failed to resolve active account: {err}");
+                                        None
+                                    }
+                                };
                             let payload_v2 = AccountUpdatedNotification {
                                 auth_mode: current_auth_method,
+                                active_account,
                             };
                             outgoing_clone
                                 .send_server_notification(ServerNotification::AccountUpdated(
@@ -1188,6 +1218,7 @@ impl CodexMessageProcessor {
 
         let payload_v2 = AccountUpdatedNotification {
             auth_mode: self.auth_manager.get_auth_mode(),
+            active_account: self.active_account_name(),
         };
         self.outgoing
             .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
@@ -1248,6 +1279,7 @@ impl CodexMessageProcessor {
 
                 let payload_v2 = AccountUpdatedNotification {
                     auth_mode: current_auth_method,
+                    active_account: self.active_account_name(),
                 };
                 self.outgoing
                     .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
@@ -1365,6 +1397,104 @@ impl CodexMessageProcessor {
             requires_openai_auth,
         };
         self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn list_accounts(&self, request_id: RequestId) {
+        let snapshot = match codex_core::accounts::list_accounts(&self.config.codex_home) {
+            Ok(snapshot) => snapshot,
+            Err(err) => {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        JSONRPCErrorError {
+                            code: INVALID_REQUEST_ERROR_CODE,
+                            message: format!("failed to list accounts: {err}"),
+                            data: None,
+                        },
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        let accounts = snapshot
+            .accounts
+            .into_iter()
+            .map(|account| ApiAccountSummary {
+                name: account.name,
+                kind: account.meta.kind.map(|kind| match kind {
+                    codex_core::accounts::AccountKind::Chatgpt => ApiAccountKind::Chatgpt,
+                    codex_core::accounts::AccountKind::ApiKey => ApiAccountKind::ApiKey,
+                }),
+                email: account.meta.email,
+            })
+            .collect();
+
+        let response = ListAccountsResponse {
+            active_account: snapshot.active_account,
+            accounts,
+        };
+        self.outgoing.send_response(request_id, response).await;
+    }
+
+    async fn switch_account(&mut self, request_id: RequestId, params: SwitchAccountParams) {
+        let SwitchAccountParams {
+            name,
+            create_if_missing,
+        } = params;
+
+        if let Err(err) =
+            codex_core::accounts::switch_account(&self.config.codex_home, &name, create_if_missing)
+        {
+            self.outgoing
+                .send_error(
+                    request_id,
+                    JSONRPCErrorError {
+                        code: INVALID_REQUEST_ERROR_CODE,
+                        message: format!("failed to switch account: {err}"),
+                        data: None,
+                    },
+                )
+                .await;
+            return;
+        }
+
+        let migrated_legacy = match self.auth_manager.migrate_legacy_auth_to_account(&name) {
+            Ok(migrated) => Some(migrated),
+            Err(err) => {
+                warn!("failed to migrate legacy auth for account {name}: {err}");
+                None
+            }
+        };
+
+        self.auth_manager.reload();
+        let response = SwitchAccountResponse {
+            active_account: name.clone(),
+            migrated_legacy,
+        };
+        self.outgoing.send_response(request_id, response).await;
+
+        let payload_v2 = AccountUpdatedNotification {
+            auth_mode: self
+                .auth_manager
+                .auth_cached()
+                .as_ref()
+                .map(CodexAuth::api_auth_mode),
+            active_account: self.active_account_name(),
+        };
+        self.outgoing
+            .send_server_notification(ServerNotification::AccountUpdated(payload_v2))
+            .await;
+    }
+
+    fn active_account_name(&self) -> Option<String> {
+        match codex_core::accounts::resolve_active_account(&self.config.codex_home) {
+            Ok(name) => name,
+            Err(err) => {
+                warn!("failed to resolve active account: {err}");
+                None
+            }
+        }
     }
 
     async fn get_user_agent(&self, request_id: RequestId) {
@@ -2165,6 +2295,30 @@ impl CodexMessageProcessor {
             Ok(_) => {
                 self.outgoing
                     .send_response(request_id, ThreadCompactStartResponse {})
+                    .await;
+            }
+            Err(err) => {
+                self.send_internal_error(request_id, format!("failed to start compaction: {err}"))
+                    .await;
+            }
+        }
+    }
+
+    async fn thread_compact(&self, request_id: RequestId, params: ThreadCompactParams) {
+        let ThreadCompactParams { thread_id } = params;
+
+        let (_, thread) = match self.load_thread(&thread_id).await {
+            Ok(v) => v,
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        match thread.submit(Op::Compact).await {
+            Ok(_) => {
+                self.outgoing
+                    .send_response(request_id, ThreadCompactResponse {})
                     .await;
             }
             Err(err) => {
