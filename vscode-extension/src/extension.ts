@@ -354,6 +354,7 @@ async function loadCachedImageBase64(imageKey: string): Promise<{
 }
 
 const HIDDEN_TAB_SESSIONS_KEY = "codez.hiddenTabSessions.v1";
+const TAB_ORDER_KEY = "codez.tabOrder.v1";
 const WORKSPACE_COLOR_OVERRIDES_KEY = "codez.workspaceColorOverrides.v1";
 const LEGACY_RUNTIMES_KEY = "codez.sessionRuntime.v1";
 const hiddenTabSessionIds = new Set<string>();
@@ -373,6 +374,14 @@ const WORKSPACE_COLOR_PALETTE = [
   "#c9d1d9", // グレー
 ] as const;
 let workspaceColorOverrides: Record<string, number> = {};
+type TabOrderState = {
+  workspaceOrder: string[];
+  sessionOrderByWorkspace: Record<string, string[]>;
+};
+let tabOrder: TabOrderState = {
+  workspaceOrder: [],
+  sessionOrderByWorkspace: {},
+};
 const mcpStatusByBackendKey = new Map<string, Map<string, string>>();
 const defaultTitleRe = /^(.*)\s+\([0-9a-f]{8}\)$/i;
 type UiImageInput = { name: string; url: string };
@@ -489,6 +498,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
   loadHiddenTabSessions(context);
+  tabOrder = loadTabOrder(context);
   workspaceColorOverrides = loadWorkspaceColorOverrides(context);
   refreshCustomPromptsFromDisk();
   void cleanupLegacyRuntimeCache(context);
@@ -567,6 +577,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.extensionUri,
     sessions,
     (workspaceFolderUri) => colorIndexForWorkspaceFolderUri(workspaceFolderUri),
+    () => listAllSessionsOrdered(sessions!),
   );
   context.subscriptions.push(sessionTree);
   context.subscriptions.push(
@@ -2286,9 +2297,7 @@ export function activate(context: vscode.ExtensionContext): void {
         saveHiddenTabSessions(context);
 
         if (activeSessionId === session.id) {
-          const visible = sessions
-            .listAll()
-            .filter((s) => !hiddenTabSessionIds.has(s.id));
+          const visible = listVisibleTabSessionsOrdered(sessions);
           const next =
             visible.find((s) => s.backendKey === session.backendKey) ??
             visible[0] ??
@@ -2297,6 +2306,131 @@ export function activate(context: vscode.ExtensionContext): void {
           else activeSessionId = null;
         }
 
+        chatView?.refresh();
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "codez._internal.moveWorkspaceTab",
+      async (args?: unknown) => {
+        if (!sessions) throw new Error("sessions is not initialized");
+        if (!extensionContext) throw new Error("extensionContext is not set");
+
+        if (typeof args !== "object" || args === null) return;
+        const a = args as Record<string, unknown>;
+        const workspaceFolderUri =
+          typeof a["workspaceFolderUri"] === "string"
+            ? a["workspaceFolderUri"].trim()
+            : "";
+        const targetWorkspaceFolderUriRaw = a["targetWorkspaceFolderUri"];
+        const targetWorkspaceFolderUri =
+          typeof targetWorkspaceFolderUriRaw === "string"
+            ? targetWorkspaceFolderUriRaw.trim()
+            : null;
+        const positionRaw = a["position"];
+        const position =
+          positionRaw === "before" ||
+          positionRaw === "after" ||
+          positionRaw === "end"
+            ? positionRaw
+            : null;
+
+        if (!workspaceFolderUri) return;
+        if (!position) return;
+
+        const all = sessions.listAll();
+        const existingWorkspaces = new Set<string>(uniqueWorkspacesInOrder(all));
+        if (!existingWorkspaces.has(workspaceFolderUri)) return;
+        if (
+          targetWorkspaceFolderUri &&
+          !existingWorkspaces.has(targetWorkspaceFolderUri)
+        ) {
+          return;
+        }
+
+        const current = canonicalWorkspaceOrder(all).filter(
+          (wk) => wk !== workspaceFolderUri,
+        );
+        let insertAt = current.length;
+        if (targetWorkspaceFolderUri) {
+          const targetIdx = current.indexOf(targetWorkspaceFolderUri);
+          if (targetIdx < 0) return;
+          insertAt = position === "after" ? targetIdx + 1 : targetIdx;
+        }
+        current.splice(insertAt, 0, workspaceFolderUri);
+        tabOrder.workspaceOrder = current;
+        saveTabOrder(extensionContext);
+
+        sessionTree?.refresh();
+        chatView?.refresh();
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "codez._internal.moveSessionTab",
+      async (args?: unknown) => {
+        if (!sessions) throw new Error("sessions is not initialized");
+        if (!extensionContext) throw new Error("extensionContext is not set");
+
+        if (typeof args !== "object" || args === null) return;
+        const a = args as Record<string, unknown>;
+        const workspaceFolderUri =
+          typeof a["workspaceFolderUri"] === "string"
+            ? a["workspaceFolderUri"].trim()
+            : "";
+        const sessionId =
+          typeof a["sessionId"] === "string" ? a["sessionId"].trim() : "";
+        const targetSessionIdRaw = a["targetSessionId"];
+        const targetSessionId =
+          typeof targetSessionIdRaw === "string"
+            ? targetSessionIdRaw.trim()
+            : null;
+        const positionRaw = a["position"];
+        const position =
+          positionRaw === "before" ||
+          positionRaw === "after" ||
+          positionRaw === "end"
+            ? positionRaw
+            : null;
+
+        if (!workspaceFolderUri) return;
+        if (!sessionId) return;
+        if (!position) return;
+
+        const all = sessions.listAll();
+        const sessionsInWorkspace = all.filter(
+          (s) => s.workspaceFolderUri === workspaceFolderUri,
+        );
+        if (!sessionsInWorkspace.some((s) => s.id === sessionId)) return;
+        if (
+          targetSessionId &&
+          !sessionsInWorkspace.some((s) => s.id === targetSessionId)
+        ) {
+          return;
+        }
+
+        const current = canonicalSessionOrderForWorkspace(
+          workspaceFolderUri,
+          all,
+        ).filter((id) => id !== sessionId);
+        let insertAt = current.length;
+        if (targetSessionId) {
+          const targetIdx = current.indexOf(targetSessionId);
+          if (targetIdx < 0) return;
+          insertAt = position === "after" ? targetIdx + 1 : targetIdx;
+        }
+        current.splice(insertAt, 0, sessionId);
+        tabOrder.sessionOrderByWorkspace = {
+          ...tabOrder.sessionOrderByWorkspace,
+          [workspaceFolderUri]: current,
+        };
+        saveTabOrder(extensionContext);
+
+        sessionTree?.refresh();
         chatView?.refresh();
       },
     ),
@@ -2318,13 +2452,37 @@ export function activate(context: vscode.ExtensionContext): void {
         sessions.remove(session.id);
         saveSessions(extensionContext, sessions);
 
+        const stillHasWorkspace = sessions
+          .listAll()
+          .some((s) => s.workspaceFolderUri === session.workspaceFolderUri);
+        const prevWorkspaceOrder = tabOrder.workspaceOrder;
+        tabOrder.workspaceOrder = stillHasWorkspace
+          ? prevWorkspaceOrder
+          : prevWorkspaceOrder.filter((wk) => wk !== session.workspaceFolderUri);
+        const prevIds =
+          tabOrder.sessionOrderByWorkspace[session.workspaceFolderUri] ?? null;
+        if (prevIds) {
+          const nextIds = prevIds.filter((id) => id !== session.id);
+          if (stillHasWorkspace && nextIds.length > 0) {
+            tabOrder.sessionOrderByWorkspace = {
+              ...tabOrder.sessionOrderByWorkspace,
+              [session.workspaceFolderUri]: nextIds,
+            };
+          } else {
+            const next = { ...tabOrder.sessionOrderByWorkspace };
+            delete next[session.workspaceFolderUri];
+            tabOrder.sessionOrderByWorkspace = next;
+          }
+        }
+        saveTabOrder(extensionContext);
+
         runtimeBySessionId.delete(session.id);
         hiddenTabSessionIds.delete(session.id);
         unreadSessionIds.delete(session.id);
         saveHiddenTabSessions(extensionContext);
 
         if (activeSessionId === session.id) {
-          const visible = sessions.listAll();
+          const visible = listVisibleTabSessionsOrdered(sessions);
           const next =
             visible.find((s) => s.backendKey === session.backendKey) ??
             visible[0] ??
@@ -4134,6 +4292,134 @@ function loadHiddenTabSessions(context: vscode.ExtensionContext): void {
   }
 }
 
+function loadTabOrder(context: vscode.ExtensionContext): TabOrderState {
+  const raw = context.workspaceState.get<unknown>(TAB_ORDER_KEY);
+  if (!raw || typeof raw !== "object") {
+    return { workspaceOrder: [], sessionOrderByWorkspace: {} };
+  }
+  const o = raw as Record<string, unknown>;
+
+  const workspaceOrder: string[] = [];
+  const wsRaw = o["workspaceOrder"];
+  if (Array.isArray(wsRaw)) {
+    for (const v of wsRaw) {
+      if (typeof v !== "string") continue;
+      const t = v.trim();
+      if (!t) continue;
+      workspaceOrder.push(t);
+    }
+  }
+
+  const sessionOrderByWorkspace: Record<string, string[]> = {};
+  const soRaw = o["sessionOrderByWorkspace"];
+  if (soRaw && typeof soRaw === "object" && !Array.isArray(soRaw)) {
+    for (const [k, v] of Object.entries(soRaw as Record<string, unknown>)) {
+      if (typeof k !== "string") continue;
+      const wk = k.trim();
+      if (!wk) continue;
+      if (!Array.isArray(v)) continue;
+      const ids: string[] = [];
+      for (const item of v) {
+        if (typeof item !== "string") continue;
+        const id = item.trim();
+        if (!id) continue;
+        ids.push(id);
+      }
+      if (ids.length > 0) sessionOrderByWorkspace[wk] = ids;
+    }
+  }
+
+  return { workspaceOrder, sessionOrderByWorkspace };
+}
+
+function saveTabOrder(context: vscode.ExtensionContext): void {
+  void context.workspaceState.update(TAB_ORDER_KEY, tabOrder);
+}
+
+function uniqueWorkspacesInOrder(sessions: Session[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of sessions) {
+    const wk = s.workspaceFolderUri;
+    if (!wk || seen.has(wk)) continue;
+    seen.add(wk);
+    out.push(wk);
+  }
+  return out;
+}
+
+function canonicalWorkspaceOrder(allSessions: Session[]): string[] {
+  const seenInBase = uniqueWorkspacesInOrder(allSessions);
+  const seen = new Set<string>(seenInBase);
+  const out: string[] = [];
+  for (const wk of tabOrder.workspaceOrder) {
+    if (!seen.has(wk)) continue;
+    if (out.includes(wk)) continue;
+    out.push(wk);
+  }
+  for (const wk of seenInBase) {
+    if (out.includes(wk)) continue;
+    out.push(wk);
+  }
+  return out;
+}
+
+function canonicalSessionOrderForWorkspace(
+  workspaceFolderUri: string,
+  allSessions: Session[],
+): string[] {
+  const baseIds = allSessions
+    .filter((s) => s.workspaceFolderUri === workspaceFolderUri)
+    .map((s) => s.id);
+  const existing = new Set<string>(baseIds);
+  const stored = tabOrder.sessionOrderByWorkspace[workspaceFolderUri] ?? [];
+  const out: string[] = [];
+  const outSet = new Set<string>();
+  for (const id of stored) {
+    if (!existing.has(id)) continue;
+    if (outSet.has(id)) continue;
+    outSet.add(id);
+    out.push(id);
+  }
+  for (const id of baseIds) {
+    if (outSet.has(id)) continue;
+    outSet.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function orderSessionsForUi(allSessions: Session[]): Session[] {
+  const byWorkspace = new Map<string, Session[]>();
+  for (const s of allSessions) {
+    const list = byWorkspace.get(s.workspaceFolderUri) ?? [];
+    byWorkspace.set(s.workspaceFolderUri, [...list, s]);
+  }
+
+  const workspaceOrder = canonicalWorkspaceOrder(allSessions);
+  const out: Session[] = [];
+  for (const wk of workspaceOrder) {
+    const group = byWorkspace.get(wk) ?? [];
+    if (group.length === 0) continue;
+    const sessionOrder = canonicalSessionOrderForWorkspace(wk, allSessions);
+    const pos = new Map<string, number>();
+    sessionOrder.forEach((id, idx) => pos.set(id, idx));
+    const sorted = [...group].sort(
+      (a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0),
+    );
+    out.push(...sorted);
+  }
+  return out;
+}
+
+function listAllSessionsOrdered(store: SessionStore): Session[] {
+  return orderSessionsForUi(store.listAll());
+}
+
+function listVisibleTabSessionsOrdered(store: SessionStore): Session[] {
+  return listAllSessionsOrdered(store).filter((s) => !hiddenTabSessionIds.has(s.id));
+}
+
 function loadWorkspaceColorOverrides(
   context: vscode.ExtensionContext,
 ): Record<string, number> {
@@ -4577,9 +4863,7 @@ function buildChatState(): ChatViewState {
       customPrompts: promptSummaries,
     };
 
-  const tabSessionsRaw = sessions
-    .listAll()
-    .filter((s) => !hiddenTabSessionIds.has(s.id));
+  const tabSessionsRaw = listVisibleTabSessionsOrdered(sessions);
   const runningSessionIds = tabSessionsRaw
     .map((s) => (ensureRuntime(s.id).sending ? s.id : null))
     .filter((v): v is string => typeof v === "string");

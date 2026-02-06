@@ -625,6 +625,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    if (type === "moveWorkspaceTab") {
+      const workspaceFolderUri = anyMsg["workspaceFolderUri"];
+      const targetWorkspaceFolderUri = anyMsg["targetWorkspaceFolderUri"];
+      const position = anyMsg["position"];
+      if (typeof workspaceFolderUri !== "string" || !workspaceFolderUri.trim())
+        return;
+      if (
+        targetWorkspaceFolderUri !== null &&
+        typeof targetWorkspaceFolderUri !== "string"
+      )
+        return;
+      if (position !== "before" && position !== "after" && position !== "end")
+        return;
+      await vscode.commands.executeCommand("codez._internal.moveWorkspaceTab", {
+        workspaceFolderUri,
+        targetWorkspaceFolderUri,
+        position,
+      });
+      return;
+    }
+
+    if (type === "moveSessionTab") {
+      const workspaceFolderUri = anyMsg["workspaceFolderUri"];
+      const sessionId = anyMsg["sessionId"];
+      const targetSessionId = anyMsg["targetSessionId"];
+      const position = anyMsg["position"];
+      if (typeof workspaceFolderUri !== "string" || !workspaceFolderUri.trim())
+        return;
+      if (typeof sessionId !== "string" || !sessionId.trim()) return;
+      if (targetSessionId !== null && typeof targetSessionId !== "string")
+        return;
+      if (position !== "before" && position !== "after" && position !== "end")
+        return;
+      await vscode.commands.executeCommand("codez._internal.moveSessionTab", {
+        workspaceFolderUri,
+        sessionId,
+        targetSessionId,
+        position,
+      });
+      return;
+    }
+
     if (type === "loadSessionHistory") {
       const sessionId = anyMsg["sessionId"];
       if (typeof sessionId !== "string") return;
@@ -1496,9 +1538,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .statusPopover { position: absolute; right: 12px; bottom: calc(100% + 6px); max-width: min(520px, calc(100vw - 24px)); background: var(--vscode-editorHoverWidget-background, var(--vscode-input-background)); border: 1px solid rgba(127,127,127,0.35); border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); padding: 8px 10px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
       .tabs { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
       .tabGroup { display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 12px; border: 2px solid var(--wt-color); flex: 0 0 auto; align-items: flex-start; }
-      .tabGroupLabel { align-self: flex-start; font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; background: var(--vscode-editorHoverWidget-background, var(--vscode-input-background)); border: 1px solid rgba(127,127,127,0.35); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+      .tabGroupLabel { align-self: flex-start; font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; background: var(--vscode-editorHoverWidget-background, var(--vscode-input-background)); border: 1px solid rgba(127,127,127,0.35); white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; user-select: none; cursor: grab; }
+      .tabGroupLabel.dragging { cursor: grabbing; opacity: 0.8; }
       .tabGroupTabs { display: flex; gap: 6px; width: fit-content; }
-      .tab { padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,0.35); cursor: pointer; white-space: nowrap; user-select: none; }
+      .tab { padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(127,127,127,0.35); cursor: grab; white-space: nowrap; user-select: none; }
+      .tab.dragging { opacity: 0.5; }
+      .dropBefore { outline: 2px solid rgba(0, 120, 212, 0.85); outline-offset: 2px; }
+      .dropAfter { outline: 2px solid rgba(0, 120, 212, 0.85); outline-offset: 2px; }
       .tab.active { border-color: rgba(0, 120, 212, 0.9); }
       .tab.unread { background: rgba(255, 185, 0, 0.14); }
       .tab.running { background: rgba(0, 120, 212, 0.12); }

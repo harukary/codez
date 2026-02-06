@@ -1160,7 +1160,32 @@ function main(): void {
   let tabsSig: string | null = null;
   let approvalsSig: string | null = null;
   const tabElBySessionId = new Map<string, HTMLDivElement>();
+  let draggingWorkspaceUri: string | null = null;
+  let draggingLabelEl: HTMLElement | null = null;
+  let draggingSession: { workspaceFolderUri: string; sessionId: string } | null =
+    null;
+  let dropIndicatorEl: HTMLElement | null = null;
+  let dropIndicatorKind: "dropBefore" | "dropAfter" | null = null;
   let isComposing = false;
+
+  const clearDropIndicator = (): void => {
+    if (dropIndicatorEl && dropIndicatorKind) {
+      dropIndicatorEl.classList.remove(dropIndicatorKind);
+    }
+    dropIndicatorEl = null;
+    dropIndicatorKind = null;
+  };
+
+  const setDropIndicator = (
+    el: HTMLElement,
+    kind: "dropBefore" | "dropAfter",
+  ): void => {
+    if (dropIndicatorEl === el && dropIndicatorKind === kind) return;
+    clearDropIndicator();
+    dropIndicatorEl = el;
+    dropIndicatorKind = kind;
+    el.classList.add(kind);
+  };
 
   const syncTabGroupLabelWidths = (): void => {
     const groups = tabsEl.querySelectorAll<HTMLElement>(".tabGroup");
@@ -1179,6 +1204,26 @@ function main(): void {
     syncTabGroupLabelWidths(),
   );
   tabsResizeObserver.observe(tabsEl);
+
+  tabsEl.addEventListener("dragover", (e) => {
+    if (!draggingWorkspaceUri) return;
+    if ((e.target as HTMLElement | null)?.closest(".tabGroup")) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    clearDropIndicator();
+  });
+  tabsEl.addEventListener("drop", (e) => {
+    if (!draggingWorkspaceUri) return;
+    if ((e.target as HTMLElement | null)?.closest(".tabGroup")) return;
+    e.preventDefault();
+    vscode.postMessage({
+      type: "moveWorkspaceTab",
+      workspaceFolderUri: draggingWorkspaceUri,
+      targetWorkspaceFolderUri: null,
+      position: "end",
+    });
+    clearDropIndicator();
+  });
 
   type SettingsResponseResult =
     | { ok: true; data: unknown }
@@ -3861,6 +3906,7 @@ function main(): void {
         if (!groupEl) {
           groupEl = document.createElement("div") as HTMLDivElement;
           groupEl.className = "tabGroup";
+          groupEl.dataset.workspaceFolderUri = groupKey;
 
           const wt = workspaceTagFromUri(groupKey, workspaceColorOverrides);
           groupEl.style.setProperty("--wt-color", wt.color);
@@ -3868,6 +3914,7 @@ function main(): void {
           const labelEl = document.createElement("div") as HTMLDivElement;
           labelEl.className = "tabGroupLabel";
           labelEl.textContent = wt.label;
+          labelEl.draggable = true;
           labelEl.addEventListener("contextmenu", (e) => {
             e.preventDefault();
             vscode.postMessage({
@@ -3875,12 +3922,72 @@ function main(): void {
               workspaceFolderUri: groupKey,
             });
           });
+          labelEl.addEventListener("dragstart", (e) => {
+            draggingWorkspaceUri = groupKey;
+            draggingLabelEl = labelEl;
+            labelEl.classList.add("dragging");
+            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          });
+          labelEl.addEventListener("dragend", () => {
+            draggingWorkspaceUri = null;
+            if (draggingLabelEl) draggingLabelEl.classList.remove("dragging");
+            draggingLabelEl = null;
+            clearDropIndicator();
+          });
+          labelEl.addEventListener("dragover", (e) => {
+            if (!draggingWorkspaceUri) return;
+            if (draggingWorkspaceUri === groupKey) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            const r = groupEl!.getBoundingClientRect();
+            const mid = r.left + r.width / 2;
+            const kind = e.clientX < mid ? "dropBefore" : "dropAfter";
+            setDropIndicator(groupEl!, kind);
+          });
+          labelEl.addEventListener("drop", (e) => {
+            if (!draggingWorkspaceUri) return;
+            if (draggingWorkspaceUri === groupKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const r = groupEl!.getBoundingClientRect();
+            const mid = r.left + r.width / 2;
+            const position = e.clientX < mid ? "before" : "after";
+            vscode.postMessage({
+              type: "moveWorkspaceTab",
+              workspaceFolderUri: draggingWorkspaceUri,
+              targetWorkspaceFolderUri: groupKey,
+              position,
+            });
+            clearDropIndicator();
+          });
           groupEl.appendChild(labelEl);
 
-          const tabsEl = document.createElement("div") as HTMLDivElement;
-          tabsEl.className = "tabGroupTabs";
-          groupEl.appendChild(tabsEl);
-          groupTabsElByWorkspaceUri.set(groupKey, tabsEl);
+          const groupTabsEl = document.createElement("div") as HTMLDivElement;
+          groupTabsEl.className = "tabGroupTabs";
+          groupTabsEl.dataset.workspaceFolderUri = groupKey;
+          groupTabsEl.addEventListener("dragover", (e) => {
+            if (!draggingSession) return;
+            if (draggingSession.workspaceFolderUri !== groupKey) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            clearDropIndicator();
+          });
+          groupTabsEl.addEventListener("drop", (e) => {
+            if (!draggingSession) return;
+            if (draggingSession.workspaceFolderUri !== groupKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            vscode.postMessage({
+              type: "moveSessionTab",
+              workspaceFolderUri: groupKey,
+              sessionId: draggingSession.sessionId,
+              targetSessionId: null,
+              position: "end",
+            });
+            clearDropIndicator();
+          });
+          groupEl.appendChild(groupTabsEl);
+          groupTabsElByWorkspaceUri.set(groupKey, groupTabsEl);
 
           groupElByWorkspaceUri.set(groupKey, groupEl);
           groupOrder.push(groupKey);
@@ -3895,6 +4002,7 @@ function main(): void {
           existing ?? (document.createElement("div") as HTMLDivElement);
         if (!existing) {
           tabElBySessionId.set(sess.id, div);
+          div.draggable = true;
           div.addEventListener("click", () =>
             vscode.postMessage({ type: "selectSession", sessionId: sess.id }),
           );
@@ -3902,7 +4010,62 @@ function main(): void {
             e.preventDefault();
             vscode.postMessage({ type: "sessionMenu", sessionId: sess.id });
           });
+          div.addEventListener("dragstart", (e) => {
+            const workspaceFolderUri = String(div.dataset.workspaceFolderUri || "");
+            const sessionId = String(div.dataset.sessionId || "");
+            if (!workspaceFolderUri || !sessionId) return;
+            draggingSession = { workspaceFolderUri, sessionId };
+            div.classList.add("dragging");
+            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+          });
+          div.addEventListener("dragend", () => {
+            draggingSession = null;
+            div.classList.remove("dragging");
+            clearDropIndicator();
+          });
+          div.addEventListener("dragover", (e) => {
+            if (!draggingSession) return;
+            const targetWorkspaceUri = String(
+              div.dataset.workspaceFolderUri || "",
+            );
+            const targetSessionId = String(div.dataset.sessionId || "");
+            if (!targetWorkspaceUri || !targetSessionId) return;
+            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri) return;
+            if (draggingSession.sessionId === targetSessionId) return;
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+            const r = div.getBoundingClientRect();
+            const mid = r.left + r.width / 2;
+            const kind = e.clientX < mid ? "dropBefore" : "dropAfter";
+            setDropIndicator(div, kind);
+          });
+          div.addEventListener("drop", (e) => {
+            if (!draggingSession) return;
+            const targetWorkspaceUri = String(
+              div.dataset.workspaceFolderUri || "",
+            );
+            const targetSessionId = String(div.dataset.sessionId || "");
+            if (!targetWorkspaceUri || !targetSessionId) return;
+            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri) return;
+            if (draggingSession.sessionId === targetSessionId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const r = div.getBoundingClientRect();
+            const mid = r.left + r.width / 2;
+            const position = e.clientX < mid ? "before" : "after";
+            vscode.postMessage({
+              type: "moveSessionTab",
+              workspaceFolderUri: targetWorkspaceUri,
+              sessionId: draggingSession.sessionId,
+              targetSessionId,
+              position,
+            });
+            clearDropIndicator();
+          });
         }
+        div.dataset.sessionId = sess.id;
+        div.dataset.workspaceFolderUri = sess.workspaceFolderUri;
+        div.draggable = true;
         div.className =
           "tab" +
           (isActive ? " active" : "") +

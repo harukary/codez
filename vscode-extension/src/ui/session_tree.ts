@@ -18,6 +18,7 @@ export class SessionTreeDataProvider
     private readonly getWorkspaceColorIndex: (
       workspaceFolderUri: string,
     ) => number,
+    private readonly listAllSessions: () => Session[],
   ) {}
 
   public dispose(): void {
@@ -79,7 +80,7 @@ export class SessionTreeDataProvider
   public getChildren(element?: TreeNode): Thenable<TreeNode[]> {
     if (!element) {
       const grouped = new Map<string, Session[]>();
-      for (const s of this.sessions.listAll()) {
+      for (const s of this.listAllSessions()) {
         const list = grouped.get(s.workspaceFolderUri) ?? [];
         grouped.set(s.workspaceFolderUri, [...list, s]);
       }
@@ -93,9 +94,9 @@ export class SessionTreeDataProvider
     }
 
     if (element.kind === "folder") {
-      const sessions = this.sessions
-        .listByWorkspaceFolderUri(element.workspaceFolderUri ?? "")
-        .filter((s) => s.workspaceFolderUri === element.workspaceFolderUri);
+      const sessions = this.listAllSessions().filter(
+        (s) => s.workspaceFolderUri === element.workspaceFolderUri,
+      );
       const byBackendId = new Map<BackendId, Session[]>();
       for (const s of sessions) {
         const list = byBackendId.get(s.backendId) ?? [];
@@ -113,13 +114,11 @@ export class SessionTreeDataProvider
     }
 
     if (element.kind === "backend") {
-      const sessions = this.sessions
-        .listByWorkspaceFolderUri(element.workspaceFolderUri ?? "")
-        .filter(
-          (s) =>
-            s.workspaceFolderUri === element.workspaceFolderUri &&
-            s.backendId === element.backendId,
-        );
+      const sessions = this.listAllSessions().filter(
+        (s) =>
+          s.workspaceFolderUri === element.workspaceFolderUri &&
+          s.backendId === element.backendId,
+      );
       return Promise.resolve(
         sessions.map((s, idx) => ({
           kind: "session",
