@@ -45,6 +45,11 @@ WSL（Ubuntu 等）で `codez` が見つからない場合は、まず `echo $PA
 
 `upstream/main`（openai/codex）に対する `codez` の差分のうち、運用上影響が大きいもの。
 
+### notice / アップグレード告知
+
+- Codez では **モデルアップグレード告知（TUI の migration prompt）を常に無効化**している。
+  - 目的: ローカル運用での強制アップグレード誘導を避けるため。
+
 ### Upstream マージ履歴
 
 `codez` がどの upstream（openai/codex）に追従しているかを追跡するため、upstream を取り込んだらここに追記する。
@@ -88,6 +93,12 @@ WSL（Ubuntu 等）で `codez` が見つからない場合は、まず `echo $PA
   - 目的: notify/MCP/hooks などが「global + project」で混ざって二重登録・二重発火する事故を避ける。
 - `.env` も同じ方針:
   - `./.codex/.env` が存在する場合はそれのみ読み込み、user（`$CODEX_HOME`）/`.env` は無視する（`codex-rs/arg0/src/lib.rs` の `load_dotenv()`）。
+
+#### experimental feature 保存先（codez）
+
+- TUI `/experimental` と VSCode拡張 `/experimental` は、`./.codex/config.toml` が存在する場合は **repo-local 側へ保存**する。
+- `./.codex/config.toml` が無い場合のみ user（`$CODEX_HOME`）/`config.toml` に保存する。
+- 目的: codez の読み込み方針（repo-local 優先で user を読まない）と保存先の不一致をなくすため。
 
 運用のコツ:
 

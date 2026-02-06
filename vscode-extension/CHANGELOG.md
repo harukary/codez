@@ -6,8 +6,18 @@
 
 - **Slash Commands**
   - `/apps` を追加（app 一覧から選択して `$<slug>` を入力欄へ挿入）
+  - `/apps` / `/mcp` / `/personality` の実行結果をインタラクティブなカードで表示
   - `/personality` を追加（friendly/pragmatic を選択して、以降のターンの personality を上書き）
   - `/collab` を追加（collaboration mode preset を選択。入力欄で Shift+Tab でも cycle）
+  - `/experimental` を追加（`shell_snapshot` / `collab` / `apps` の feature toggle）
+  - `/experimental` の保存先を codez の config layering に合わせ、`./.codex/config.toml` がある場合は repo-local へ保存
+- **Collaboration Mode**
+  - Ctrl+Shift の単一ショートカットで collaboration mode をトグル
+  - Chat view 上で Shift+Tab でもトグルできるように keybinding を追加
+  - 入力欄フォーカス時以外（チャットビュー全体）でも Ctrl+Shift トグルを検知
+  - 現在のモード表示をモデル名の左に表示
+  - モード切替時に左下の表示が即時更新されるように修正
+  - モード切替時にチャット内へシステムメッセージカードを表示
 - **Sessions / History**
   - `/resume` の履歴ピッカーに `archived` / `sortKey` / `sourceKinds` フィルタを追加
   - archived スレッドを選んだ場合、復元前に `thread/unarchive` を実行
@@ -50,6 +60,8 @@
   - codez/codex セッションで OpenCode の起動時カードが混ざる問題を修正（OpenCode started としてbackend/cwdでフィルタ）
 - **Skills**
   - `No skills found` の案内に `./.codex/config.toml`（project）も明記（codez の config layering を反映）
+  - remote skills の一覧/ダウンロード API に対応
+  - skills のライブ更新検知に対応
 
 ## 0.2.7
 
