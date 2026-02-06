@@ -1186,7 +1186,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const session = await backendManager.newSession(
           folder,
           backendId,
-          getSessionModelState(null),
+          undefined,
         );
         setActiveSession(session.id);
         void ensureModelsFetched(session);
@@ -2538,7 +2538,7 @@ export function activate(context: vscode.ExtensionContext): void {
             session = await backendManager.newSession(
               folder,
               backendId,
-              getSessionModelState(null),
+              undefined,
             );
           }
         }

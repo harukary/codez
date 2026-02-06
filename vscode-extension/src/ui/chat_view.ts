@@ -205,20 +205,29 @@ type RewindRequest = {
   turnIndex: number;
 };
 
-let sessionModelState: {
+const EMPTY_MODEL_STATE: {
   model: string | null;
   provider: string | null;
   reasoning: string | null;
   agent: string | null;
 } = { model: null, provider: null, reasoning: null, agent: null };
 
-export type ModelState = typeof sessionModelState;
+// Loaded from ~/.codex/config.toml (or equivalent). This is used only to label what "default"
+// means in the UI; it must not implicitly override per-session settings.
+let cliDefaultModelState: {
+  model: string | null;
+  provider: string | null;
+  reasoning: string | null;
+  agent: string | null;
+} = { ...EMPTY_MODEL_STATE };
+
+export type ModelState = typeof EMPTY_MODEL_STATE;
 
 const modelStateBySessionId = new Map<string, ModelState>();
 
 export function getSessionModelState(sessionId: string | null): ModelState {
-  if (!sessionId) return sessionModelState;
-  return modelStateBySessionId.get(sessionId) ?? sessionModelState;
+  if (!sessionId) return cliDefaultModelState;
+  return modelStateBySessionId.get(sessionId) ?? EMPTY_MODEL_STATE;
 }
 
 export function hasSessionModelState(sessionId: string): boolean {
@@ -233,7 +242,7 @@ export function setSessionModelState(
 }
 
 export function setDefaultModelState(state: ModelState): void {
-  sessionModelState = state;
+  cliDefaultModelState = state;
 }
 
 function asNullableString(v: unknown): string | null {
