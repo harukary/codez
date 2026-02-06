@@ -131,7 +131,14 @@ export type ChatBlock =
     }
   | { id: string; type: "plan"; title: string; text: string }
   | { id: string; type: "error"; title: string; text: string }
-  | { id: string; type: "system"; title: string; text: string };
+  | { id: string; type: "system"; title: string; text: string }
+  | {
+      id: string;
+      type: "actionCard";
+      title: string;
+      text: string;
+      actions: Array<{ id: string; label: string; style?: "primary" | "default" }>;
+    };
 
 export type ChatViewState = {
   capabilities?: {
@@ -165,6 +172,9 @@ export type ChatViewState = {
     model: string;
     displayName: string;
     description: string;
+    upgrade?: string | null;
+    inputModalities?: string[] | null;
+    supportsPersonality?: boolean | null;
     supportedReasoningEfforts: Array<{
       reasoningEffort: string;
       description: string;
@@ -172,6 +182,7 @@ export type ChatViewState = {
     defaultReasoningEffort: string;
     isDefault: boolean;
   }> | null;
+  collaborationModeLabel?: string | null;
   approvals: Array<{
     requestKey: string;
     title: string;
@@ -253,6 +264,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     description?: string;
   }> | null = null;
   private opencodeAgentsCacheSessionId: string | null = null;
+  private readonly pendingRequestUserInput = new Map<
+    string,
+    (resp: { cancelled: boolean; answersById: Record<string, string[]> }) => void
+  >();
 
   public insertIntoInput(text: string): void {
     this.view?.webview.postMessage({ type: "insertText", text });
@@ -260,6 +275,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   public toast(kind: "info" | "success" | "error", message: string): void {
     this.view?.webview.postMessage({ type: "toast", kind, message });
+  }
+
+  public async promptRequestUserInput(args: {
+    sessionId: string;
+    requestKey: string;
+    params: unknown;
+  }): Promise<{ cancelled: boolean; answersById: Record<string, string[]> }> {
+    if (!this.view) {
+      await this.viewReadyPromise;
+    }
+    if (!this.view) {
+      return { cancelled: true, answersById: {} };
+    }
+    return await new Promise((resolve) => {
+      this.pendingRequestUserInput.set(args.requestKey, resolve);
+      void this.view?.webview.postMessage({
+        type: "requestUserInputStart",
+        sessionId: args.sessionId,
+        requestKey: args.requestKey,
+        params: args.params,
+      });
+    });
+  }
+
+  public invalidateSkillIndex(sessionId: string): void {
+    this.view?.webview.postMessage({ type: "skillIndexInvalidate", sessionId });
+  }
+
+  public postSkillIndex(
+    sessionId: string,
+    skills: Array<{
+      name: string;
+      description: string | null;
+      scope: string;
+      path: string;
+    }>,
+  ): void {
+    this.view?.webview.postMessage({
+      type: "skillIndex",
+      sessionId,
+      skills,
+    });
   }
 
   public notifyAccountLoginCompleted(args: {
@@ -334,6 +391,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         path: string;
       }>
     >,
+    private readonly onActionCardAction: (args: {
+      sessionId: string;
+      cardId: string;
+      actionId: string;
+    }) => Promise<void>,
     private readonly onLoadImage: (
       imageKey: string,
     ) => Promise<{ mimeType: string; base64: string }>,
@@ -553,6 +615,42 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           url: (img as any).url as string,
         }));
       await this.onSend(text, normalized, (rewind as any) ?? null);
+      return;
+    }
+
+    if (type === "requestUserInputResponse") {
+      const requestKey = anyMsg["requestKey"];
+      if (typeof requestKey !== "string" || !requestKey) return;
+      const response = anyMsg["response"] as
+        | { cancelled?: unknown; answers?: unknown }
+        | undefined;
+      const cancelled = Boolean(response?.cancelled);
+      const answersById: Record<string, string[]> = {};
+      if (response && typeof response.answers === "object" && response.answers) {
+        for (const [key, val] of Object.entries(
+          response.answers as Record<string, unknown>,
+        )) {
+          const raw = (val as any)?.answers;
+          if (Array.isArray(raw))
+            answersById[key] = raw.map((v) => String(v ?? "").trim()).filter(Boolean);
+        }
+      }
+      const resolver = this.pendingRequestUserInput.get(requestKey);
+      if (resolver) {
+        this.pendingRequestUserInput.delete(requestKey);
+        resolver({ cancelled, answersById });
+      }
+      return;
+    }
+
+    if (type === "actionCardAction") {
+      const sessionId = anyMsg["sessionId"];
+      const cardId = anyMsg["cardId"];
+      const actionId = anyMsg["actionId"];
+      if (typeof sessionId !== "string" || !sessionId) return;
+      if (typeof cardId !== "string" || !cardId) return;
+      if (typeof actionId !== "string" || !actionId) return;
+      await this.onActionCardAction({ sessionId, cardId, actionId });
       return;
     }
 
@@ -1530,6 +1628,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       button.iconBtn.settingsBtn::before { content: "⚙"; font-size: 14px; }
       .footerBar { border-top: 1px solid rgba(127,127,127,0.25); padding: 8px 12px 10px; display: flex; flex-wrap: nowrap; gap: 10px; align-items: center; position: relative; }
       .modelBar { display: flex; flex-wrap: nowrap; gap: 8px; align-items: center; margin: 0; min-width: 0; flex: 1 1 auto; overflow: hidden; }
+      .modeBadge { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(127,127,127,0.35); opacity: 0.85; white-space: nowrap; }
       .modelSelect { background: var(--vscode-input-background); color: inherit; border: 1px solid rgba(127,127,127,0.35); border-radius: 6px; padding: 4px 6px; }
       .modelSelect.model { width: 160px; max-width: 160px; }
       .modelSelect.effort { width: 110px; max-width: 110px; }
@@ -1613,6 +1712,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .msgActions { display: flex; gap: 8px; }
       .msgActionBtn { padding: 2px 8px; font-size: 12px; border-radius: 999px; }
       .msgMeta { margin-top: 8px; font-size: 11px; opacity: 0.65; white-space: pre-wrap; word-break: break-word; }
+      .actionCard { background: rgba(255, 185, 0, 0.10); }
+      .actionCardHeader { font-weight: 600; margin-bottom: 6px; }
+      .actionCardBody { opacity: 0.95; white-space: pre-wrap; }
+      .actionCardActions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+      .actionCardBtn.primary { background: rgba(0, 120, 212, 0.18); border-color: rgba(0,120,212,0.45); }
 
       /* inProgress: spinner */
       .statusIcon.status-inProgress::before { width: 14px; height: 14px; border: 2px solid rgba(180, 180, 180, 0.95); border-top-color: rgba(180, 180, 180, 0.15); border-radius: 50%; animation: cmSpin 0.9s linear infinite; margin: 1px; }

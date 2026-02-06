@@ -156,7 +156,14 @@ type ChatBlock =
     }
   | { id: string; type: "plan"; title: string; text: string }
   | { id: string; type: "error"; title: string; text: string }
-  | { id: string; type: "system"; title: string; text: string };
+  | { id: string; type: "system"; title: string; text: string }
+  | {
+      id: string;
+      type: "actionCard";
+      title: string;
+      text: string;
+      actions: Array<{ id: string; label: string; style?: "primary" | "default" }>;
+    };
 
 type ChatViewState = {
   globalBlocks?: ChatBlock[];
@@ -184,6 +191,9 @@ type ChatViewState = {
     model: string;
     displayName: string;
     description: string;
+    upgrade?: string | null;
+    inputModalities?: string[] | null;
+    supportsPersonality?: boolean | null;
     supportedReasoningEfforts: Array<{
       reasoningEffort: string;
       description: string;
@@ -191,6 +201,7 @@ type ChatViewState = {
     defaultReasoningEffort: string;
     isDefault: boolean;
   }> | null;
+  collaborationModeLabel?: string | null;
   approvals: Array<{
     requestKey: string;
     title: string;
@@ -295,6 +306,10 @@ function main(): void {
   const statusBtn = maybeGet<HTMLButtonElement>("status");
   const tabsEl = mustGet("tabs");
   const modelBarEl = mustGet("modelBar");
+  const modeBadgeEl = document.createElement("span");
+  modeBadgeEl.id = "modeBadge";
+  modeBadgeEl.className = "modeBadge";
+  modeBadgeEl.textContent = "default";
   const footerBarEl = (() => {
     const el = statusTextEl.parentElement;
     if (!el)
@@ -313,6 +328,7 @@ function main(): void {
   // For opencode sessions, `agentSelect` is used as the Build/Plan mode selector.
   // Keep it to the left of model selection.
   modelBarEl.appendChild(agentSelect);
+  modelBarEl.appendChild(modeBadgeEl);
   modelBarEl.appendChild(modelSelect);
   modelBarEl.appendChild(reasoningSelect);
 
@@ -358,19 +374,21 @@ function main(): void {
     sendBtn.disabled = disabled;
   };
 
-  const postRequestUserInputResponse = (): void => {
+  const postRequestUserInputResponse = (cancelled: boolean): void => {
     const st = requestUserInputState;
     if (!st) return;
 
     const answers: Record<string, { answers: string[] }> = {};
-    for (const q of st.questions) {
-      answers[q.id] = { answers: st.answersById[q.id] ?? [] };
+    if (!cancelled) {
+      for (const q of st.questions) {
+        answers[q.id] = { answers: st.answersById[q.id] ?? [] };
+      }
     }
 
     vscode.postMessage({
       type: "requestUserInputResponse",
       requestKey: st.requestKey,
-      response: { answers },
+      response: { answers, cancelled },
     });
   };
 
@@ -393,7 +411,7 @@ function main(): void {
 
     const q = st.questions[st.index] ?? null;
     if (!q) {
-      postRequestUserInputResponse();
+      postRequestUserInputResponse(false);
       clearRequestUserInput();
       return;
     }
@@ -431,7 +449,7 @@ function main(): void {
     cancelBtn.className = "askBtn";
     cancelBtn.textContent = "Cancel";
     cancelBtn.addEventListener("click", () => {
-      postRequestUserInputResponse();
+      postRequestUserInputResponse(true);
       clearRequestUserInput();
     });
 
@@ -837,6 +855,7 @@ function main(): void {
   const composerBySessionKey = new Map<string, ComposerState>();
   let activeComposerKey = NO_SESSION_KEY;
   let pendingImages: PendingImage[] = [];
+  let lastModeToggleAt = 0;
 
   const composerKeyForSessionId = (sessionId: string | null): string =>
     sessionId ?? NO_SESSION_KEY;
@@ -2379,6 +2398,12 @@ function main(): void {
       kind: "slash",
     },
     {
+      insert: "/debug-config ",
+      label: "/debug-config",
+      detail: "Show config details",
+      kind: "slash",
+    },
+    {
       insert: "/diff ",
       label: "/diff",
       detail: "Open Latest Diff",
@@ -3568,6 +3593,13 @@ function main(): void {
       provider: null,
       reasoning: null,
     };
+    const modeLabel =
+      typeof s.collaborationModeLabel === "string" &&
+      s.collaborationModeLabel.trim()
+        ? s.collaborationModeLabel.trim()
+        : "default";
+    modeBadgeEl.textContent = modeLabel;
+    modeBadgeEl.style.display = s.activeSession ? "" : "none";
     const models = s.models ?? [];
     const backendId = s.activeSession?.backendId ?? null;
     const opencodeDefaultKey =
@@ -3609,7 +3641,14 @@ function main(): void {
       { value: "default", label: "default" },
       ...models.map((m) => ({
         value: String(m.model || m.id),
-        label: String(m.displayName || m.model || m.id),
+        label: (() => {
+          const base = String(m.displayName || m.model || m.id);
+          const upgrade =
+            typeof m.upgrade === "string" && m.upgrade.trim()
+              ? ` (upgrade → ${m.upgrade.trim()})`
+              : "";
+          return base + upgrade;
+        })(),
       })),
     ];
     const selectedModelKey = String(ms.model || "").trim() || "default";
@@ -3797,7 +3836,7 @@ function main(): void {
     sendBtn.title = s.sending ? "Stop (Esc)" : "Send (Enter)";
     if (statusBtn) statusBtn.disabled = !s.activeSession || s.sending;
     resumeBtn.disabled = s.sending;
-    attachBtn.disabled = !s.activeSession;
+    attachBtn.disabled = !s.activeSession || !allowsImageInputs(s);
     reloadBtn.disabled =
       !s.activeSession || s.sending || s.reloading || backendId !== "codez";
     reloadBtn.title =
@@ -5102,6 +5141,40 @@ function main(): void {
         continue;
       }
 
+      if (block.type === "actionCard") {
+        const key = "b:" + block.id;
+        const div = ensureDiv(key, "msg actionCard");
+        div.replaceChildren();
+        const header = el("div", "actionCardHeader");
+        header.textContent = block.title;
+        const body = el("div", "actionCardBody");
+        renderMarkdownInto(body, block.text);
+        const actions = el("div", "actionCardActions");
+        for (const action of block.actions) {
+          const btn = document.createElement("button");
+          btn.className =
+            action.style === "primary"
+              ? "actionCardBtn primary"
+              : "actionCardBtn";
+          btn.textContent = action.label;
+          btn.addEventListener("click", () => {
+            if (!state.activeSession) return;
+            vscode.postMessage({
+              type: "actionCardAction",
+              sessionId: state.activeSession.id,
+              cardId: block.id,
+              actionId: action.id,
+            });
+          });
+          actions.appendChild(btn);
+        }
+        div.appendChild(header);
+        div.appendChild(body);
+        if (block.actions.length > 0) div.appendChild(actions);
+        placeTopLevel(div);
+        continue;
+      }
+
       if (block.type === "system") {
         const key = "b:" + block.id;
         if (block.title === "Other events (debug)") {
@@ -5235,6 +5308,13 @@ function main(): void {
     const trimmed = text.trim();
     if (!trimmed && pendingImages.length === 0) return;
     if (pendingImages.length > 0) {
+      if (!allowsImageInputs(state)) {
+        showToast(
+          "info",
+          "選択中のモデルは画像入力に対応していません。",
+        );
+        return;
+      }
       vscode.postMessage({
         type: "sendWithImages",
         text,
@@ -5270,6 +5350,27 @@ function main(): void {
     updateSuggestions();
     saveComposerState();
     setEditMode(null);
+  }
+
+  function allowsImageInputs(s: ChatViewState): boolean {
+    const models = s.models ?? [];
+    if (models.length === 0) return true;
+    const selected = String(s.modelState?.model ?? "").trim();
+    const selectedKey = selected && selected !== "default" ? selected : "";
+    const opencodeDefaultKey =
+      s.activeSession?.backendId === "opencode"
+        ? String(s.opencodeDefaultModelKey || "")
+        : "";
+    const model =
+      models.find((m) => String(m.model || m.id) === selectedKey) ??
+      (opencodeDefaultKey
+        ? models.find((m) => String(m.model || m.id) === opencodeDefaultKey)
+        : null) ??
+      models.find((m) => Boolean(m.isDefault)) ??
+      null;
+    const modalities = model?.inputModalities ?? null;
+    if (!modalities || modalities.length === 0) return true;
+    return modalities.map((m) => String(m).toLowerCase()).includes("image");
   }
 
   function renderAttachments(): void {
@@ -5374,7 +5475,13 @@ function main(): void {
     true,
   );
 
-  attachBtn.addEventListener("click", () => imageInput.click());
+  attachBtn.addEventListener("click", () => {
+    if (!allowsImageInputs(state)) {
+      showToast("info", "選択中のモデルは画像入力に対応していません。");
+      return;
+    }
+    imageInput.click();
+  });
   imageInput.addEventListener("change", async () => {
     const files = Array.from(imageInput.files ?? []);
     imageInput.value = "";
@@ -5454,6 +5561,10 @@ function main(): void {
           it.kind === "file" && String(it.type || "").startsWith("image/"),
       );
       if (imageItems.length === 0) return;
+      if (!allowsImageInputs(state)) {
+        showToast("info", "選択中のモデルは画像入力に対応していません。");
+        return;
+      }
       if (!state.activeSession) return;
 
       for (let i = 0; i < imageItems.length; i++) {
@@ -5495,16 +5606,19 @@ function main(): void {
   });
 
   inputEl.addEventListener("keydown", (e) => {
-    if (
-      (e as KeyboardEvent).key === "Tab" &&
-      (e as KeyboardEvent).shiftKey &&
+    const key = (e as KeyboardEvent).key;
+    const wantsToggle =
+      ((key === "Shift" && (e as KeyboardEvent).ctrlKey) ||
+        (key === "Control" && (e as KeyboardEvent).shiftKey)) &&
       !(e as KeyboardEvent).altKey &&
-      !(e as KeyboardEvent).ctrlKey &&
       !(e as KeyboardEvent).metaKey &&
-      suggestItems.length === 0
-    ) {
+      !e.repeat;
+    if (wantsToggle) {
       const sessionId = state.activeSession?.id ?? null;
       if (!sessionId) return;
+      const now = Date.now();
+      if (now - lastModeToggleAt < 300) return;
+      lastModeToggleAt = now;
       e.preventDefault();
       vscode.postMessage({ type: "cycleCollaborationMode", sessionId });
       return;
@@ -5802,6 +5916,11 @@ function main(): void {
           ? (anyMsg as any).requestKey
           : null;
       if (!requestKey) return;
+      const sessionId =
+        typeof (anyMsg as any).sessionId === "string"
+          ? (anyMsg as any).sessionId
+          : null;
+      if (sessionId && state.activeSession?.id !== sessionId) return;
       const params = (anyMsg as any).params;
       const questions = Array.isArray(params?.questions)
         ? (params.questions as RequestUserInputQuestion[])
@@ -5997,7 +6116,19 @@ function main(): void {
 
       skillIndex = skills;
       skillIndexForSessionId = sessionId;
+      skillIndexRequestedForSessionId = null;
       updateSuggestions();
+      return;
+    }
+    if (anyMsg.type === "skillIndexInvalidate") {
+      const sessionId =
+        typeof anyMsg.sessionId === "string" ? anyMsg.sessionId : null;
+      if (!sessionId) return;
+      if (skillIndexForSessionId === sessionId) {
+        skillIndex = null;
+        skillIndexForSessionId = null;
+        skillIndexRequestedForSessionId = null;
+      }
       return;
     }
     if (anyMsg.type === "insertText") {

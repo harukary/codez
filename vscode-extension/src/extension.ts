@@ -16,6 +16,11 @@ import type { ImageContent } from "./generated/ImageContent";
 import type { Personality } from "./generated/Personality";
 import type { CommandAction } from "./generated/v2/CommandAction";
 import type { Model } from "./generated/v2/Model";
+import type { SkillsListEntry } from "./generated/v2/SkillsListEntry";
+import type { SkillMetadata } from "./generated/v2/SkillMetadata";
+import type { AppInfo } from "./generated/v2/AppInfo";
+import type { RemoteSkillSummary } from "./generated/v2/RemoteSkillSummary";
+import type { ConfigReadResponse } from "./generated/v2/ConfigReadResponse";
 import type { RateLimitSnapshot } from "./generated/v2/RateLimitSnapshot";
 import type { RateLimitWindow } from "./generated/v2/RateLimitWindow";
 import type { Thread } from "./generated/v2/Thread";
@@ -71,6 +76,32 @@ type CachedImageMeta = {
   byteLength: number;
   createdAtMs: number;
 };
+
+type ActionCardState =
+  | {
+      kind: "personality";
+      actions: Map<
+        string,
+        { label: string; personality: Personality | null }
+      >;
+    }
+  | { kind: "apps"; actions: Map<string, { app: AppInfo }> }
+  | { kind: "mcp"; actions: Map<string, { action: "refresh" }> }
+  | {
+      kind: "skills";
+      actions: Map<
+        string,
+        | { kind: "insert"; skill: SkillMetadata }
+        | { kind: "download"; remote: RemoteSkillSummary }
+      >;
+    }
+  | {
+      kind: "debugConfig";
+      actions: Map<
+        string,
+        { kind: "copyConfig" | "copyLayers"; payload: string }
+      >;
+    };
 
 const IMAGE_CACHE_DIRNAME = "images.v2";
 const IMAGE_CACHE_MAX_ITEMS = 500;
@@ -438,6 +469,7 @@ type SessionRuntime = {
     (decision: "accept" | "acceptForSession" | "decline" | "cancel") => void
   >;
   pendingAppMentions: Array<{ name: string; path: string }>;
+  actionCards: Map<string, ActionCardState>;
 };
 
 const runtimeBySessionId = new Map<string, SessionRuntime>();
@@ -879,6 +911,9 @@ export function activate(context: vscode.ExtensionContext): void {
         path: s.path,
       }));
     },
+    async (args) => {
+      await handleActionCardAction(args);
+    },
     async (imageKey) => {
       return await loadCachedImageBase64(imageKey);
     },
@@ -914,6 +949,8 @@ export function activate(context: vscode.ExtensionContext): void {
       schedulePersistRuntime(session.id);
     },
   );
+  backendManager.onRequestUserInput = async (session, req) =>
+    await handleRequestUserInputInChat(session, req);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       ChatViewProvider.viewType,
@@ -2064,45 +2101,7 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showErrorMessage("No session selected.");
           return;
         }
-
-        let entries;
-        try {
-          entries = await backendManager.listSkillsForSession(session);
-        } catch (err) {
-          output.appendLine(`[skills] Failed to list skills: ${String(err)}`);
-          void vscode.window.showErrorMessage("Failed to list skills.");
-          return;
-        }
-
-        const entry = entries[0] ?? null;
-        const skills = entry?.skills ?? [];
-        const errors = entry?.errors ?? [];
-
-        if (skills.length === 0) {
-          const msg =
-            errors.length > 0
-              ? "No skills found (some skills failed to load)."
-              : "No skills found. Enable [features].skills=true in ./.codex/config.toml (if present) or $CODEX_HOME/config.toml.";
-          void vscode.window.showInformationMessage(msg);
-          return;
-        }
-
-        const picked = await vscode.window.showQuickPick(
-          skills.map((s) => ({
-            label: s.name,
-            description: s.description,
-            detail: `${s.scope} • ${s.path}`,
-            skill: s,
-          })),
-          {
-            title: "Codex UI: Skills",
-            matchOnDescription: true,
-            matchOnDetail: true,
-          },
-        );
-        if (!picked) return;
-
-        chatView?.insertIntoInput(`$${picked.skill.name} `);
+        await showSkillsActionCard(session);
       },
     ),
   );
@@ -2130,15 +2129,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
         const presets = await ensureCollaborationPresetsFetched(session);
         const modeOrder: Record<string, number> = {
+          default: 0,
           plan: 1,
-          code: 2,
-          pair_programming: 3,
-          execute: 4,
-          custom: 5,
         };
         const sorted = [...presets].sort((a, b) => {
-          const ao = modeOrder[a.mode ?? "custom"] ?? 999;
-          const bo = modeOrder[b.mode ?? "custom"] ?? 999;
+          const ao = modeOrder[a.mode ?? "default"] ?? 999;
+          const bo = modeOrder[b.mode ?? "default"] ?? 999;
           if (ao !== bo) return ao - bo;
           return a.name.localeCompare(b.name);
         });
@@ -2161,10 +2157,13 @@ export function activate(context: vscode.ExtensionContext): void {
         session.collaborationModePresetName = next.name;
         saveSessions(extensionContext, sessions);
 
-        chatView?.toast(
-          "info",
-          `Mode: ${next.label} (Shift+Tab to cycle, /collab to pick)`,
-        );
+        upsertBlock(session.id, {
+          id: newLocalId("collabToggle"),
+          type: "system",
+          title: "Collaboration mode",
+          text: `Mode set to ${next.label}.`,
+        });
+        chatView?.refresh();
       },
     ),
   );
@@ -3305,6 +3304,154 @@ async function sendUserInput(
   schedulePersistRuntime(session.id);
 }
 
+function registerActionCard(
+  sessionId: string,
+  cardId: string,
+  state: ActionCardState,
+): void {
+  const rt = ensureRuntime(sessionId);
+  rt.actionCards.set(cardId, state);
+}
+
+function getActionCardState(
+  sessionId: string,
+  cardId: string,
+): ActionCardState | null {
+  const rt = ensureRuntime(sessionId);
+  return rt.actionCards.get(cardId) ?? null;
+}
+
+function formatRequestUserInputQuestions(
+  questions: Array<{
+    id: string;
+    header: string;
+    question: string;
+    options: Array<{ label: string; description?: string }> | null;
+    isSecret: boolean;
+  }>,
+): string {
+  const lines: string[] = [];
+  questions.forEach((q, idx) => {
+    const head = q.header?.trim() || `Question ${idx + 1}`;
+    lines.push(`${idx + 1}. ${head}`);
+    if (q.question?.trim()) lines.push(q.question.trim());
+    if (q.options && q.options.length > 0) {
+      lines.push("Options:");
+      for (const opt of q.options) {
+        const detail = opt.description ? ` — ${opt.description}` : "";
+        lines.push(`- ${opt.label}${detail}`);
+      }
+    }
+    if (q.isSecret) {
+      lines.push("(answer will be hidden)");
+    }
+    lines.push("");
+  });
+  return lines.join("\n").trim();
+}
+
+function formatRequestUserInputAnswers(
+  questions: Array<{
+    id: string;
+    header: string;
+    question: string;
+    isSecret: boolean;
+  }>,
+  answersById: Record<string, string[]>,
+  cancelled: boolean,
+): string {
+  if (cancelled) return "Cancelled.";
+  const lines: string[] = [];
+  for (const q of questions) {
+    const label = q.header?.trim() || q.question?.trim() || q.id;
+    if (q.isSecret) {
+      lines.push(`- ${label}: (hidden)`);
+      continue;
+    }
+    const ans = answersById[q.id] ?? [];
+    lines.push(`- ${label}: ${ans.length > 0 ? ans.join(", ") : "(empty)"}`);
+  }
+  return lines.join("\n");
+}
+
+async function handleRequestUserInputInChat(
+  session: Session,
+  req: {
+    id: string | number;
+    params: {
+      threadId: string;
+      turnId: string;
+      itemId: string;
+      questions: Array<{
+        id: string;
+        header: string;
+        question: string;
+        options: Array<{ label: string; description?: string }> | null;
+        isOther: boolean;
+        isSecret: boolean;
+      }>;
+    };
+  },
+): Promise<{ cancelled: boolean; answersById: Record<string, string[]> }> {
+  if (!chatView) {
+    throw new Error("Chat view is not ready for request_user_input");
+  }
+  const requestKey = requestKeyFromId(req.id);
+  const questions = req.params.questions.map((q) => ({
+    id: q.id,
+    header: q.header,
+    question: q.question,
+    options: q.options,
+    isSecret: q.isSecret,
+  }));
+
+  const promptBlockId = newLocalId("requestUserInput");
+  upsertBlock(session.id, {
+    id: promptBlockId,
+    type: "system",
+    title: "Request user input",
+    text: formatRequestUserInputQuestions(questions),
+  });
+  chatView.refresh();
+  schedulePersistRuntime(session.id);
+
+  const result = await chatView.promptRequestUserInput({
+    sessionId: session.id,
+    requestKey,
+    params: req.params,
+  });
+
+  const responseBlockId = newLocalId("requestUserInputResult");
+  upsertBlock(session.id, {
+    id: responseBlockId,
+    type: "system",
+    title: "Request user input",
+    text: formatRequestUserInputAnswers(
+      questions,
+      result.answersById,
+      result.cancelled,
+    ),
+  });
+  chatView.refresh();
+  schedulePersistRuntime(session.id);
+
+  if (result.cancelled && backendManager) {
+    const rt = ensureRuntime(session.id);
+    const turnId = rt.activeTurnId ?? req.params.turnId;
+    if (turnId) {
+      try {
+        await backendManager.interruptTurn(session, turnId);
+      } catch (err) {
+        outputChannel?.appendLine(
+          `[request_user_input] Failed to interrupt turn: ${String(err)}`,
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
 async function handleSlashCommand(
   context: vscode.ExtensionContext,
   session: Session,
@@ -3398,46 +3545,8 @@ async function handleSlashCommand(
       return true;
     }
 
-    if (!backendManager) throw new Error("backendManager is not initialized");
-    try {
-      const response = await backendManager.listMcpServerStatus(
-        session.backendKey,
-      );
-      const serverNames = response.data.map((s) => s.name).filter(Boolean);
-
-      const statusMap = getMcpStatusMap(session.backendKey);
-      for (const name of serverNames) {
-        if (!statusMap.has(name)) statusMap.set(name, "configured");
-      }
-
-      const icon = (state: string): string =>
-        state === "ready" ? "✓" : state === "starting" ? "…" : "•";
-      const lines = serverNames.map((name) => {
-        const state = statusMap.get(name) ?? "configured";
-        return `${icon(state)} ${name}`;
-      });
-
-      upsertBlock(session.id, {
-        id: newLocalId("mcp"),
-        type: "system",
-        title: "MCP servers",
-        text: ["MCP servers:", ...lines].join("\n"),
-      });
-      chatView?.refresh();
-      schedulePersistRuntime(session.id);
-      return true;
-    } catch (err) {
-      const msg = formatUnknownError(err);
-      upsertBlock(session.id, {
-        id: newLocalId("mcpListError"),
-        type: "error",
-        title: "MCP servers",
-        text: msg,
-      });
-      chatView?.refresh();
-      schedulePersistRuntime(session.id);
-      return true;
-    }
+    await showMcpActionCard(session);
+    return true;
   }
   if (cmd === "apps") {
     if (arg) {
@@ -3464,55 +3573,8 @@ async function handleSlashCommand(
       return true;
     }
 
-    if (!backendManager) throw new Error("backendManager is not initialized");
-    try {
-      const apps = await backendManager.listAppsForSession(session);
-      if (apps.length === 0) {
-        upsertBlock(session.id, {
-          id: newLocalId("appsEmpty"),
-          type: "info",
-          title: "Apps",
-          text: "利用可能な app が見つかりませんでした。",
-        });
-        chatView?.refresh();
-        schedulePersistRuntime(session.id);
-        return true;
-      }
-
-      const picked = await vscode.window.showQuickPick(
-        apps.map((a) => ({
-          label: `$${a.name}`,
-          description: a.isAccessible ? "" : "(not accessible)",
-          detail: a.description ?? a.installUrl ?? "",
-          app: a,
-        })),
-        { title: "Apps: Insert into prompt" },
-      );
-      if (!picked) return true;
-      const rt = ensureRuntime(session.id);
-      const name = String(picked.app.name || "").trim();
-      const id = String(picked.app.id || "").trim();
-      if (name && id) {
-        const path = `app://${id}`;
-        const existing = rt.pendingAppMentions.find(
-          (m) => m.name === name && m.path === path,
-        );
-        if (!existing) rt.pendingAppMentions.push({ name, path });
-      }
-      chatView?.insertIntoInput(`$${picked.app.name} `);
-      return true;
-    } catch (err) {
-      const msg = formatUnknownError(err);
-      upsertBlock(session.id, {
-        id: newLocalId("appsListError"),
-        type: "error",
-        title: "Apps",
-        text: msg,
-      });
-      chatView?.refresh();
-      schedulePersistRuntime(session.id);
-      return true;
-    }
+    await showAppsActionCard(session);
+    return true;
   }
   if (cmd === "personality") {
     if (arg) {
@@ -3539,42 +3601,35 @@ async function handleSlashCommand(
       return true;
     }
 
-    if (!sessions) throw new Error("sessions is not initialized");
-    if (!extensionContext) throw new Error("extensionContext is not set");
+    await showPersonalityActionCard(session);
+    return true;
+  }
+  if (cmd === "debug-config") {
+    if (arg) {
+      upsertBlock(session.id, {
+        id: newLocalId("debugConfigError"),
+        type: "error",
+        title: "Slash command error",
+        text: "/debug-config does not take arguments.",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
 
-    const picked = await vscode.window.showQuickPick(
-      [
-        {
-          label: "default",
-          description: "Backend default personality",
-          personality: null as Personality | null,
-        },
-        {
-          label: "friendly",
-          description: "Friendly tone",
-          personality: "friendly" as const,
-        },
-        {
-          label: "pragmatic",
-          description: "Pragmatic tone",
-          personality: "pragmatic" as const,
-        },
-      ],
-      { title: "Personality: Select" },
-    );
-    if (!picked) return true;
+    if (session.backendId === "opencode") {
+      upsertBlock(session.id, {
+        id: newLocalId("debugConfigUnsupported"),
+        type: "info",
+        title: "Debug config",
+        text: "opencode backend では /debug-config は未対応です。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return true;
+    }
 
-    session.personality = picked.personality;
-    saveSessions(extensionContext, sessions);
-
-    upsertBlock(session.id, {
-      id: newLocalId("personalitySet"),
-      type: "info",
-      title: "Personality",
-      text: `Set to ${picked.label}.`,
-    });
-    chatView?.refresh();
-    schedulePersistRuntime(session.id);
+    await showDebugConfigActionCard(session);
     return true;
   }
   if (cmd === "collab") {
@@ -3635,7 +3690,7 @@ async function handleSlashCommand(
 
     const picked = await vscode.window.showQuickPick(items, {
       title: "Collaboration mode",
-      placeHolder: "Pick a collaboration preset (Shift+Tab cycles).",
+      placeHolder: "Pick a collaboration preset (Ctrl+Shift cycles).",
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -3646,7 +3701,7 @@ async function handleSlashCommand(
 
     upsertBlock(session.id, {
       id: newLocalId("collabSet"),
-      type: "info",
+      type: "system",
       title: "Collaboration mode",
       text: `Set to ${picked.label}.`,
     });
@@ -3831,9 +3886,7 @@ async function handleSlashCommand(
     return true;
   }
   if (cmd === "skills") {
-    await vscode.commands.executeCommand("codez.showSkills", {
-      sessionId: session.id,
-    });
+    await showSkillsActionCard(session);
     return true;
   }
   if (cmd === "agents") {
@@ -4027,8 +4080,9 @@ async function handleSlashCommand(
         "- /status: Show status",
         "- /mcp: List MCP servers",
         "- /apps: Browse apps",
-        "- /collab: Change collaboration mode (Shift+Tab)",
+        "- /collab: Change collaboration mode (Ctrl+Shift)",
         "- /personality: Set personality",
+        "- /debug-config: Show config details",
         "- /diff: Open Latest Diff",
         "- /rename <title>: Rename session",
         "- /skills: Browse skills",
@@ -4053,6 +4107,490 @@ async function handleSlashCommand(
   }
 
   return false;
+}
+
+async function showPersonalityActionCard(
+  session: Session,
+  opts?: { cardId?: string },
+): Promise<void> {
+  if (!sessions) throw new Error("sessions is not initialized");
+  if (!extensionContext) throw new Error("extensionContext is not set");
+
+  const cardId = opts?.cardId ?? newLocalId("personalityCard");
+  const current = session.personality ?? null;
+  const choices: Array<{
+    label: string;
+    description: string;
+    personality: Personality | null;
+  }> = [
+    {
+      label: "default",
+      description: "Backend default personality",
+      personality: null,
+    },
+    {
+      label: "friendly",
+      description: "Friendly tone",
+      personality: "friendly",
+    },
+    {
+      label: "pragmatic",
+      description: "Pragmatic tone",
+      personality: "pragmatic",
+    },
+  ];
+
+  const actions = new Map<
+    string,
+    { label: string; personality: Personality | null }
+  >();
+  const actionButtons = choices.map((c) => {
+    const id = `personality:${c.label}`;
+    actions.set(id, { label: c.label, personality: c.personality });
+    return {
+      id,
+      label: c.label,
+      style: current === c.personality ? "primary" : "default",
+    } as const;
+  });
+
+  const models = getModelOptionsForSession(session) ?? [];
+  const modelState = getSessionModelState(session.id);
+  const selectedKey = String(modelState.model || "").trim();
+  const selected =
+    models.find((m) => String(m.model || m.id) === selectedKey) ??
+    models.find((m) => Boolean(m.isDefault)) ??
+    null;
+  const supportsPersonality =
+    selected && typeof selected.supportsPersonality === "boolean"
+      ? selected.supportsPersonality
+      : null;
+
+  const lines = [
+    `Current: ${current ?? "default"}`,
+    supportsPersonality === false
+      ? "Note: selected model does not support personality."
+      : null,
+    "",
+    "Pick a personality for this session:",
+    ...choices.map((c) => `- ${c.label}: ${c.description}`),
+  ].filter(Boolean);
+
+  registerActionCard(session.id, cardId, {
+    kind: "personality",
+    actions,
+  });
+  upsertBlock(session.id, {
+    id: cardId,
+    type: "actionCard",
+    title: "Personality",
+    text: lines.join("\n"),
+    actions: actionButtons,
+  });
+  chatView?.refresh();
+  schedulePersistRuntime(session.id);
+}
+
+async function showAppsActionCard(
+  session: Session,
+  opts?: { cardId?: string },
+): Promise<void> {
+  if (!backendManager) throw new Error("backendManager is not initialized");
+
+  const cardId = opts?.cardId ?? newLocalId("appsCard");
+  try {
+    const apps = await backendManager.listAppsForSession(session);
+    if (apps.length === 0) {
+      upsertBlock(session.id, {
+        id: cardId,
+        type: "info",
+        title: "Apps",
+        text: "利用可能な app が見つかりませんでした。",
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return;
+    }
+
+    const actions = new Map<string, { app: AppInfo }>();
+    const actionButtons = apps
+      .filter((a) => a.isAccessible)
+      .map((a, idx) => {
+        const id = `app:${idx}:${a.id}`;
+        actions.set(id, { app: a });
+        return { id, label: `Insert $${a.name}`, style: "primary" as const };
+      });
+
+    const lines = [
+      "Available apps:",
+      ...apps.map((a) => {
+        const access = a.isAccessible ? "" : " (not accessible)";
+        const detail = a.description || a.installUrl || "";
+        return `- $${a.name}${access}${detail ? ` — ${detail}` : ""}`;
+      }),
+    ];
+
+    registerActionCard(session.id, cardId, { kind: "apps", actions });
+    upsertBlock(session.id, {
+      id: cardId,
+      type: "actionCard",
+      title: "Apps",
+      text: lines.join("\n"),
+      actions: actionButtons,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  } catch (err) {
+    const msg = formatUnknownError(err);
+    upsertBlock(session.id, {
+      id: newLocalId("appsListError"),
+      type: "error",
+      title: "Apps",
+      text: msg,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  }
+}
+
+async function showMcpActionCard(
+  session: Session,
+  opts?: { cardId?: string },
+): Promise<void> {
+  if (!backendManager) throw new Error("backendManager is not initialized");
+  const cardId = opts?.cardId ?? newLocalId("mcpCard");
+
+  try {
+    const response = await backendManager.listMcpServerStatus(
+      session.backendKey,
+    );
+    const serverNames = response.data.map((s) => s.name).filter(Boolean);
+
+    const statusMap = getMcpStatusMap(session.backendKey);
+    for (const name of serverNames) {
+      if (!statusMap.has(name)) statusMap.set(name, "configured");
+    }
+
+    const icon = (state: string): string =>
+      state === "ready" ? "✓" : state === "starting" ? "…" : "•";
+    const lines =
+      serverNames.length > 0
+        ? serverNames.map((name) => {
+            const state = statusMap.get(name) ?? "configured";
+            return `- ${icon(state)} ${name}`;
+          })
+        : ["(no MCP servers configured)"];
+
+    const actions = new Map<string, { action: "refresh" }>();
+    actions.set("refresh", { action: "refresh" });
+    registerActionCard(session.id, cardId, { kind: "mcp", actions });
+    upsertBlock(session.id, {
+      id: cardId,
+      type: "actionCard",
+      title: "MCP servers",
+      text: ["MCP servers:", ...lines].join("\n"),
+      actions: [{ id: "refresh", label: "Refresh", style: "primary" }],
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  } catch (err) {
+    const msg = formatUnknownError(err);
+    upsertBlock(session.id, {
+      id: newLocalId("mcpListError"),
+      type: "error",
+      title: "MCP servers",
+      text: msg,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  }
+}
+
+async function showSkillsActionCard(
+  session: Session,
+  opts?: { cardId?: string; forceReload?: boolean },
+): Promise<void> {
+  if (!backendManager) throw new Error("backendManager is not initialized");
+
+  const cardId = opts?.cardId ?? newLocalId("skillsCard");
+  let entries: SkillsListEntry[] = [];
+  let localError: string | null = null;
+  try {
+    entries = await backendManager.listSkillsForSession(session, {
+      forceReload: opts?.forceReload ?? false,
+    });
+  } catch (err) {
+    localError = formatUnknownError(err);
+  }
+
+  const entry = entries[0] ?? null;
+  const skills = entry?.skills ?? [];
+  const errors = entry?.errors ?? [];
+
+  let remoteSkills: RemoteSkillSummary[] = [];
+  let remoteError: string | null = null;
+  try {
+    remoteSkills = await backendManager.listRemoteSkillsForSession(session);
+  } catch (err) {
+    remoteError = formatUnknownError(err);
+  }
+
+  const lines: string[] = [];
+  if (localError) {
+    lines.push(`Local skills: failed to load (${localError})`);
+  } else if (skills.length === 0) {
+    const msg =
+      errors.length > 0
+        ? "Local skills: none (some skills failed to load)."
+        : "Local skills: none (enable [features].skills=true in config).";
+    lines.push(msg);
+  } else {
+    lines.push("Local skills:");
+    for (const s of skills) {
+      const detail = s.description ? ` — ${s.description}` : "";
+      lines.push(`- $${s.name}${detail}`);
+    }
+  }
+
+  if (errors.length > 0) {
+    lines.push("");
+    lines.push("Local skill errors:");
+    for (const e of errors) {
+      lines.push(`- ${e.path}: ${e.message}`);
+    }
+  }
+
+  lines.push("");
+  if (remoteError) {
+    lines.push(`Remote skills: failed to load (${remoteError})`);
+  } else if (remoteSkills.length === 0) {
+    lines.push("Remote skills: none");
+  } else {
+    lines.push("Remote skills:");
+    for (const r of remoteSkills) {
+      const detail = r.description ? ` — ${r.description}` : "";
+      lines.push(`- ${r.name}${detail}`);
+    }
+  }
+
+  const actions = new Map<
+    string,
+    | { kind: "insert"; skill: SkillMetadata }
+    | { kind: "download"; remote: RemoteSkillSummary }
+  >();
+  const actionButtons: Array<{
+    id: string;
+    label: string;
+    style?: "primary" | "default";
+  }> = [];
+
+  for (const s of skills) {
+    const id = `skill:insert:${s.name}`;
+    actions.set(id, { kind: "insert", skill: s });
+    actionButtons.push({ id, label: `Insert $${s.name}` });
+  }
+  for (const r of remoteSkills) {
+    const id = `skill:download:${r.id}`;
+    actions.set(id, { kind: "download", remote: r });
+    actionButtons.push({ id, label: `Download ${r.name}` });
+  }
+
+  registerActionCard(session.id, cardId, { kind: "skills", actions });
+  upsertBlock(session.id, {
+    id: cardId,
+    type: "actionCard",
+    title: "Skills",
+    text: lines.join("\n").trim(),
+    actions: actionButtons,
+  });
+  chatView?.refresh();
+  schedulePersistRuntime(session.id);
+}
+
+async function showDebugConfigActionCard(
+  session: Session,
+  opts?: { cardId?: string },
+): Promise<void> {
+  if (!backendManager) throw new Error("backendManager is not initialized");
+  const cardId = opts?.cardId ?? newLocalId("debugConfigCard");
+
+  try {
+    const res: ConfigReadResponse =
+      await backendManager.readConfigForSession(session);
+    const configJson = JSON.stringify(res.config, null, 2);
+    const layersJson = JSON.stringify(res.layers ?? [], null, 2);
+    const originsJson = JSON.stringify(res.origins ?? {}, null, 2);
+    const limit = 10_000;
+    const configText =
+      configJson.length <= limit
+        ? configJson
+        : `${configJson.slice(0, limit)}\n...(truncated ${configJson.length - limit} chars)`;
+    const layersText =
+      layersJson.length <= limit
+        ? layersJson
+        : `${layersJson.slice(0, limit)}\n...(truncated ${layersJson.length - limit} chars)`;
+    const originsText =
+      originsJson.length <= limit
+        ? originsJson
+        : `${originsJson.slice(0, limit)}\n...(truncated ${originsJson.length - limit} chars)`;
+
+    const actions = new Map<
+      string,
+      { kind: "copyConfig" | "copyLayers"; payload: string }
+    >();
+    actions.set("copyConfig", { kind: "copyConfig", payload: configJson });
+    actions.set("copyLayers", { kind: "copyLayers", payload: layersJson });
+
+    registerActionCard(session.id, cardId, { kind: "debugConfig", actions });
+    upsertBlock(session.id, {
+      id: cardId,
+      type: "actionCard",
+      title: "Debug config",
+      text: [
+        "Effective config:",
+        "```json",
+        configText,
+        "```",
+        "",
+        "Layers:",
+        "```json",
+        layersText,
+        "```",
+        "",
+        "Origins:",
+        "```json",
+        originsText,
+        "```",
+      ].join("\n"),
+      actions: [
+        { id: "copyConfig", label: "Copy config JSON", style: "primary" },
+        { id: "copyLayers", label: "Copy layers JSON" },
+      ],
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  } catch (err) {
+    const msg = formatUnknownError(err);
+    upsertBlock(session.id, {
+      id: newLocalId("debugConfigError"),
+      type: "error",
+      title: "Debug config",
+      text: msg,
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+  }
+}
+
+async function handleActionCardAction(args: {
+  sessionId: string;
+  cardId: string;
+  actionId: string;
+}): Promise<void> {
+  if (!sessions) throw new Error("sessions is not initialized");
+  if (!extensionContext) throw new Error("extensionContext is not set");
+
+  const session = sessions.getById(args.sessionId);
+  if (!session) return;
+  const state = getActionCardState(args.sessionId, args.cardId);
+  if (!state) {
+    upsertBlock(session.id, {
+      id: newLocalId("actionCardMissing"),
+      type: "error",
+      title: "Action card",
+      text: "Action card state not found. Please re-run the command.",
+    });
+    chatView?.refresh();
+    schedulePersistRuntime(session.id);
+    return;
+  }
+
+  if (state.kind === "personality") {
+    const action = state.actions.get(args.actionId);
+    if (!action) return;
+    session.personality = action.personality;
+    saveSessions(extensionContext, sessions);
+    upsertBlock(session.id, {
+      id: newLocalId("personalitySet"),
+      type: "info",
+      title: "Personality",
+      text: `Set to ${action.label}.`,
+    });
+    await showPersonalityActionCard(session, { cardId: args.cardId });
+    return;
+  }
+
+  if (state.kind === "apps") {
+    const action = state.actions.get(args.actionId);
+    if (!action) return;
+    const rt = ensureRuntime(session.id);
+    const name = String(action.app.name || "").trim();
+    const id = String(action.app.id || "").trim();
+    if (name && id) {
+      const path = `app://${id}`;
+      const existing = rt.pendingAppMentions.find(
+        (m) => m.name === name && m.path === path,
+      );
+      if (!existing) rt.pendingAppMentions.push({ name, path });
+      chatView?.insertIntoInput(`$${name} `);
+    }
+    return;
+  }
+
+  if (state.kind === "mcp") {
+    const action = state.actions.get(args.actionId);
+    if (!action) return;
+    if (action.action === "refresh") {
+      await showMcpActionCard(session, { cardId: args.cardId });
+    }
+    return;
+  }
+
+  if (state.kind === "skills") {
+    const action = state.actions.get(args.actionId);
+    if (!action) return;
+    if (action.kind === "insert") {
+      chatView?.insertIntoInput(`$${action.skill.name} `);
+      return;
+    }
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    try {
+      const res = await backendManager.downloadRemoteSkillForSession(
+        session,
+        action.remote.id,
+      );
+      upsertBlock(session.id, {
+        id: newLocalId("remoteSkillDownloaded"),
+        type: "info",
+        title: "Remote skill downloaded",
+        text: `${res.name} → ${res.path}`,
+      });
+      chatView?.invalidateSkillIndex(session.id);
+      await showSkillsActionCard(session, {
+        cardId: args.cardId,
+        forceReload: true,
+      });
+      return;
+    } catch (err) {
+      const msg = formatUnknownError(err);
+      upsertBlock(session.id, {
+        id: newLocalId("remoteSkillError"),
+        type: "error",
+        title: "Remote skill download failed",
+        text: msg,
+      });
+      chatView?.refresh();
+      schedulePersistRuntime(session.id);
+      return;
+    }
+  }
+
+  if (state.kind === "debugConfig") {
+    const action = state.actions.get(args.actionId);
+    if (!action) return;
+    await vscode.env.clipboard.writeText(action.payload);
+    chatView?.toast("success", "Copied to clipboard.");
+  }
 }
 
 function formatThreadLabel(preview: string): string {
@@ -4765,6 +5303,7 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     pendingApprovals: new Map(),
     approvalResolvers: new Map(),
     pendingAppMentions: [],
+    actionCards: new Map(),
   };
   runtimeBySessionId.set(sessionId, rt);
   return rt;
@@ -4859,6 +5398,7 @@ function buildChatState(): ChatViewState {
       cliDefaultModelState: getSessionModelState(null),
       modelState: getSessionModelState(null),
       models: null,
+      collaborationModeLabel: null,
       approvals: [],
       customPrompts: promptSummaries,
     };
@@ -4889,6 +5429,7 @@ function buildChatState(): ChatViewState {
       statusTooltip: globalRateLimitStatusTooltip,
       cliDefaultModelState: getSessionModelState(null),
       modelState: getSessionModelState(null),
+      collaborationModeLabel: null,
       approvals: [],
       customPrompts: promptSummaries,
     };
@@ -4942,6 +5483,11 @@ function buildChatState(): ChatViewState {
     cliDefaultModelState: getSessionModelState(null),
     modelState: getSessionModelState(activeRaw.id),
     models: getModelOptionsForSession(activeRaw),
+    collaborationModeLabel:
+      activeRaw.collaborationModePresetName &&
+      activeRaw.collaborationModePresetName.trim()
+        ? activeRaw.collaborationModePresetName.trim()
+        : "default",
     approvals: [...rt.pendingApprovals.entries()].map(([requestKey, v]) => ({
       requestKey,
       title: v.title,
@@ -7177,7 +7723,9 @@ function applyCodexEvent(
     type !== "turn_aborted" &&
     type !== "mcp_startup_complete" &&
     type !== "mcp_startup_update" &&
-    type !== "list_custom_prompts_response"
+    type !== "list_custom_prompts_response" &&
+    type !== "skills_update_available" &&
+    type !== "skillsUpdateAvailable"
   ) {
     return;
   }
@@ -7207,6 +7755,36 @@ function applyCodexEvent(
       .filter((p) => !!p.name)
       .map((p) => ({ ...p, source: "server" as const }));
     setCustomPrompts(next);
+    return;
+  }
+
+  if (type === "skills_update_available" || type === "skillsUpdateAvailable") {
+    chatView?.invalidateSkillIndex(sessionId);
+    if (backendManager) {
+      const session = sessions?.getById(sessionId) ?? null;
+      if (session) {
+        void backendManager
+          .listSkillsForSession(session, { forceReload: true })
+          .then((entries) => {
+            const entry = entries[0] ?? null;
+            const skills = entry?.skills ?? [];
+            chatView?.postSkillIndex(
+              session.id,
+              skills.map((s) => ({
+                name: s.name,
+                description: s.description,
+                scope: s.scope,
+                path: s.path,
+              })),
+            );
+          })
+          .catch((err) => {
+            outputChannel?.appendLine(
+              `[skills] Failed to refresh skills after update: ${String(err)}`,
+            );
+          });
+      }
+    }
     return;
   }
 
