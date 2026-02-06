@@ -147,7 +147,13 @@
         "title": "Codex UI: Switch Account"
       }
     ],
-    "keybindings": [],
+    "keybindings": [
+      {
+        "command": "codez.cycleCollaborationMode",
+        "key": "shift+tab",
+        "when": "view == codez.chatView"
+      }
+    ],
     "menus": {
       "view/item/context": [
         {

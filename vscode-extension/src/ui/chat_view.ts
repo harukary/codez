@@ -1507,6 +1507,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       statusTooltip: full.statusTooltip,
       modelState: full.modelState,
       models: full.models,
+      collaborationModeLabel: full.collaborationModeLabel,
       approvals: full.approvals,
       customPrompts: full.customPrompts,
       opencodeAgents: this.opencodeAgentsCache,

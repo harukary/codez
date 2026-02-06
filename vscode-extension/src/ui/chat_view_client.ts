@@ -857,6 +857,27 @@ function main(): void {
   let pendingImages: PendingImage[] = [];
   let lastModeToggleAt = 0;
 
+  function handleCollaborationModeToggleShortcut(e: KeyboardEvent): boolean {
+    const isCtrlShiftOnly =
+      ((e.key === "Shift" && e.ctrlKey) || (e.key === "Control" && e.shiftKey)) &&
+      !e.altKey &&
+      !e.metaKey &&
+      !e.repeat;
+    const isShiftTab =
+      e.key === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+    const wantsToggle = isCtrlShiftOnly || isShiftTab;
+    if (!wantsToggle) return false;
+    const sessionId = state.activeSession?.id ?? null;
+    if (!sessionId) return false;
+    const now = Date.now();
+    if (now - lastModeToggleAt < 300) return true;
+    lastModeToggleAt = now;
+    e.preventDefault();
+    e.stopPropagation();
+    vscode.postMessage({ type: "cycleCollaborationMode", sessionId });
+    return true;
+  }
+
   const composerKeyForSessionId = (sessionId: string | null): string =>
     sessionId ?? NO_SESSION_KEY;
 
@@ -2401,6 +2422,12 @@ function main(): void {
       insert: "/debug-config ",
       label: "/debug-config",
       detail: "Show config details",
+      kind: "slash",
+    },
+    {
+      insert: "/experimental ",
+      label: "/experimental",
+      detail: "Toggle experimental features",
       kind: "slash",
     },
     {
@@ -5464,6 +5491,7 @@ function main(): void {
   document.addEventListener(
     "keydown",
     (e) => {
+      if (handleCollaborationModeToggleShortcut(e as KeyboardEvent)) return;
       const ke = e as KeyboardEvent;
       if (ke.key !== "Escape") return;
       if (!state.sending) return;
@@ -5606,23 +5634,7 @@ function main(): void {
   });
 
   inputEl.addEventListener("keydown", (e) => {
-    const key = (e as KeyboardEvent).key;
-    const wantsToggle =
-      ((key === "Shift" && (e as KeyboardEvent).ctrlKey) ||
-        (key === "Control" && (e as KeyboardEvent).shiftKey)) &&
-      !(e as KeyboardEvent).altKey &&
-      !(e as KeyboardEvent).metaKey &&
-      !e.repeat;
-    if (wantsToggle) {
-      const sessionId = state.activeSession?.id ?? null;
-      if (!sessionId) return;
-      const now = Date.now();
-      if (now - lastModeToggleAt < 300) return;
-      lastModeToggleAt = now;
-      e.preventDefault();
-      vscode.postMessage({ type: "cycleCollaborationMode", sessionId });
-      return;
-    }
+    if (handleCollaborationModeToggleShortcut(e as KeyboardEvent)) return;
     if (
       (e as KeyboardEvent).key === "Enter" &&
       !(e as KeyboardEvent).shiftKey
