@@ -178,7 +178,7 @@ Workflow（詰まりポイント）:
 
 ### codespellが落ちる
 
-- 対処: 指摘箇所を修正（例: `configRes` のような誤判定は単語選定を変える）
+- 対処: 指摘箇所を修正（例: `configResult` のように誤判定されにくい単語へ置き換える）
 - どうしても必要なら `.codespellignore` へ追加（最小限）
 
 ### cargo-denyで `vulnerability`（例: bytes）

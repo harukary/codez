@@ -3398,8 +3398,8 @@ function formatRequestUserInputAnswers(
       lines.push(`- ${label}: (hidden)`);
       continue;
     }
-    const ans = answersById[q.id] ?? [];
-    lines.push(`- ${label}: ${ans.length > 0 ? ans.join(", ") : "(empty)"}`);
+    const answers = answersById[q.id] ?? [];
+    lines.push(`- ${label}: ${answers.length > 0 ? answers.join(", ") : "(empty)"}`);
   }
   return lines.join("\n");
 }
