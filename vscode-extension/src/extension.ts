@@ -3226,9 +3226,36 @@ async function sendUserInput(
       throw new Error(msg);
     }
     const resolvedModel = preset.model ?? modelState?.model ?? null;
-    if (!resolvedModel) {
+    const mode = preset.mode === "plan" ? "plan" : "default";
+    // Presets may omit `model` (upstream builtin presets do). If the user hasn't
+    // explicitly selected a model for this session, resolve the effective model
+    // via backend config/model list so we can populate required v2 fields.
+    let finalModel = resolvedModel;
+    if (!finalModel) {
+      try {
+        const cfg = await backendManager.readConfigForSession(session);
+        finalModel = cfg.config.model ?? null;
+      } catch (err) {
+        outputChannel?.appendLine(
+          `[collab] Failed to resolve model via config/read: ${formatUnknownError(err)}`,
+        );
+      }
+    }
+    if (!finalModel) {
+      try {
+        const models = await backendManager.listModelsForSession(session);
+        finalModel =
+          models.find((m) => m.isDefault)?.model ??
+          (models[0]?.model ?? null);
+      } catch (err) {
+        outputChannel?.appendLine(
+          `[collab] Failed to resolve model via model/list: ${formatUnknownError(err)}`,
+        );
+      }
+    }
+    if (!finalModel) {
       rt.sending = false;
-      const msg = `collaboration preset '${preset.name}' has no model and no active model is selected; cannot apply.`;
+      const msg = `collaboration preset '${preset.name}' has no model and no active/effective model could be resolved; cannot apply.`;
       upsertBlock(session.id, {
         id: newLocalId("collabInvalid"),
         type: "error",
@@ -3238,11 +3265,11 @@ async function sendUserInput(
       chatView?.refresh();
       throw new Error(msg);
     }
-    const mode = preset.mode === "plan" ? "plan" : "default";
+
     collaborationMode = {
       mode,
       settings: {
-        model: resolvedModel,
+        model: finalModel,
         reasoning_effort: preset.reasoning_effort ?? null,
         developer_instructions: preset.developer_instructions ?? null,
       },
