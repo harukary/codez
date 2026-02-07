@@ -1,13 +1,9 @@
-use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
-use tokio::select;
-use tokio::time::timeout;
+use std::process::Command;
 
 /// Regression test for https://github.com/openai/codex/issues/8803.
-#[tokio::test]
-async fn malformed_rules_should_not_panic() -> anyhow::Result<()> {
-    // run_codex_cli() does not work on Windows due to PTY limitations.
+#[test]
+fn malformed_rules_should_not_panic() -> anyhow::Result<()> {
     if cfg!(windows) {
         return Ok(());
     }
@@ -34,7 +30,7 @@ model_provider = "ollama"
     );
     std::fs::write(codex_home.join("config.toml"), config_contents)?;
 
-    let CodexCliOutput { exit_code, output } = run_codex_cli(codex_home, cwd).await?;
+    let CodexCliOutput { exit_code, output } = run_codex_cli(codex_home, &cwd)?;
     assert_ne!(0, exit_code, "Codex CLI should exit nonzero.");
     assert!(
         output.contains("ERROR: Failed to initialize codex:"),
@@ -52,68 +48,32 @@ struct CodexCliOutput {
     output: String,
 }
 
-async fn run_codex_cli(
-    codex_home: impl AsRef<Path>,
-    cwd: impl AsRef<Path>,
-) -> anyhow::Result<CodexCliOutput> {
+fn run_codex_cli(codex_home: impl AsRef<Path>, cwd: &Path) -> anyhow::Result<CodexCliOutput> {
     let codex_cli = codex_utils_cargo_bin::cargo_bin("codex")?;
-    let mut env = HashMap::new();
-    env.insert(
-        "CODEX_HOME".to_string(),
-        codex_home.as_ref().display().to_string(),
-    );
+    let codex_home = codex_home.as_ref();
+    let args = ["-c", "analytics.enabled=false"];
 
-    let args = vec!["-c".to_string(), "analytics.enabled=false".to_string()];
-    let spawned = codex_utils_pty::spawn_pty_process(
-        codex_cli.to_string_lossy().as_ref(),
-        &args,
-        cwd.as_ref(),
-        &env,
-        &None,
-    )
-    .await?;
-    let mut output = Vec::new();
-    let mut output_rx = spawned.output_rx;
-    let mut exit_rx = spawned.exit_rx;
-    let writer_tx = spawned.session.writer_sender();
-    let exit_code_result = timeout(Duration::from_secs(10), async {
-        // Read PTY output until the process exits while replying to cursor
-        // position queries so the TUI can initialize without a real terminal.
-        loop {
-            select! {
-                result = output_rx.recv() => match result {
-                    Ok(chunk) => {
-                        // The TUI asks for the cursor position via ESC[6n.
-                        // Respond with a valid position to unblock startup.
-                        if chunk.windows(4).any(|window| window == b"\x1b[6n") {
-                            let _ = writer_tx.send(b"\x1b[1;1R".to_vec()).await;
-                        }
-                        output.extend_from_slice(&chunk);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break exit_rx.await,
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                },
-                result = &mut exit_rx => break result,
-            }
-        }
-    })
-    .await;
-    let exit_code = match exit_code_result {
-        Ok(Ok(code)) => code,
-        Ok(Err(err)) => return Err(err.into()),
-        Err(_) => {
-            spawned.session.terminate();
-            anyhow::bail!("timed out waiting for codex CLI to exit");
-        }
-    };
-    // Drain any output that raced with the exit notification.
-    while let Ok(chunk) = output_rx.try_recv() {
-        output.extend_from_slice(&chunk);
+    // Use a non-interactive spawn to keep the test stable and avoid PTY flakes.
+    // This code path still exercises codex initialization and error reporting.
+    let mut command = Command::new(codex_cli);
+    command.current_dir(cwd);
+    command.env_clear();
+    command.env("CODEX_HOME", codex_home);
+    command.env("HOME", codex_home);
+    if let Ok(path) = std::env::var("PATH") {
+        command.env("PATH", path);
     }
+    command.env("TERM", "xterm-256color");
+    command.args(args);
 
-    let output = String::from_utf8_lossy(&output);
+    let output = command.output()?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    let mut combined = output.stdout;
+    combined.extend_from_slice(&output.stderr);
+    let combined = String::from_utf8_lossy(&combined);
+
     Ok(CodexCliOutput {
         exit_code,
-        output: output.to_string(),
+        output: combined.to_string(),
     })
 }
