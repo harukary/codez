@@ -5731,8 +5731,14 @@ function applyServerNotification(
       rt.lastTurnCompletedAtMs = Date.now();
       rt.activeTurnId = null;
       rt.pendingInterrupt = false;
+      // IMPORTANT: clear the streaming set before flushing pending deltas so the webview sees
+      // `streaming=false` for the final append. Otherwise, if messages are delivered out of order
+      // (append after upsert), the webview can get stuck in the <pre> fast-path and skip Markdown
+      // rendering even after the turn completes.
+      const streamingIds = [...rt.streamingAssistantItemIds];
+      rt.streamingAssistantItemIds.clear();
       flushPendingAssistantDeltas(sessionId, rt);
-      for (const id of rt.streamingAssistantItemIds) {
+      for (const id of streamingIds) {
         const idx = rt.blockIndexById.get(id);
         if (idx === undefined) continue;
         const b = rt.blocks[idx];
@@ -5741,7 +5747,6 @@ function applyServerNotification(
           chatView?.postBlockUpsert(sessionId, b);
         }
       }
-      rt.streamingAssistantItemIds.clear();
       markUnreadSession(sessionId);
       sessionPanels?.markTurnCompleted(sessionId);
       chatView?.refresh();
