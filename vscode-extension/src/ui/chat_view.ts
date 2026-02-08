@@ -1551,13 +1551,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       reloading: full.reloading,
       statusText: full.statusText,
       statusTooltip: full.statusTooltip,
+      cliDefaultModelState: full.cliDefaultModelState,
       modelState: full.modelState,
       models: full.models,
       collaborationModeLabel: full.collaborationModeLabel,
       approvals: full.approvals,
       customPrompts: full.customPrompts,
       opencodeAgents: this.opencodeAgentsCache,
+      opencodeDefaultModelKey: full.opencodeDefaultModelKey,
       opencodeDefaultAgentName: full.opencodeDefaultAgentName,
+      approvalSessionIds: full.approvalSessionIds,
     };
     void this.view.webview
       .postMessage({ type: "controlState", seq, state: controlState })
