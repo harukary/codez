@@ -27,6 +27,9 @@
   - タブをドラッグ&ドロップで並び替え（プロジェクト単位 / プロジェクト内セッション単位）
 - **Approvals**
   - approval が必要なセッションのタブを「入力待ち」と同じ強調表示にし、別タブへ移動しようとしたときに案内を表示
+- **Models**
+  - backend が返す effective model をモデルセレクタへ自動反映しない（選択 UI は「ユーザーの明示的 override」vs「default(=config)」を表す）
+  - upgrade 先が存在するモデル（`upgrade → ...`）を候補から除外して重複表示を抑制
 - **OpenCode / Agent Mode**
   - OpenCodeのAgentモード（Build/Plan）切り替えをサポート
   - opencodeセッション時にモデルセレクターの左にAgentセレクターを表示

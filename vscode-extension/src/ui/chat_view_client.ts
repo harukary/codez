@@ -3729,9 +3729,17 @@ function main(): void {
       }
       return "default (CLI config)";
     })();
+    const modelKeys = new Set(models.map((m) => String(m.model || m.id)));
+    const visibleModels = models.filter((m) => {
+      const upgrade = typeof m.upgrade === "string" ? m.upgrade.trim() : "";
+      // If a model is known to be auto-upgraded to another model that we can already
+      // pick explicitly, hide the alias to avoid confusing duplicates.
+      if (upgrade && modelKeys.has(upgrade)) return false;
+      return true;
+    });
     const modelOptions = [
       { value: "default", label: "default" },
-      ...models.map((m) => ({
+      ...visibleModels.map((m) => ({
         value: String(m.model || m.id),
         label: (() => {
           const base = String(m.displayName || m.model || m.id);

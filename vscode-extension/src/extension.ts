@@ -7618,30 +7618,10 @@ function applyGlobalNotification(
     }
     case "sessionConfigured": {
       const p = (n as any).params as Record<string, unknown>;
-      const threadId =
-        typeof (p as any).sessionId === "string"
-          ? ((p as any).sessionId as string)
-          : null;
-      const model =
-        typeof (p as any).model === "string"
-          ? ((p as any).model as string)
-          : null;
-      const reasoning =
-        typeof (p as any).reasoningEffort === "string"
-          ? ((p as any).reasoningEffort as string)
-          : null;
-      const session =
-        threadId && sessions
-          ? sessions.getByThreadId(backendKey, threadId)
-          : null;
-      if (session && model) {
-        setSessionModelState(session.id, {
-          model,
-          provider: null,
-          reasoning,
-          agent: null,
-        });
-      }
+      // Do not overwrite the model selector with the backend's effective model.
+      // The selector represents user overrides (explicit picks) vs "default" (config-driven).
+      // If we set it here, the UI looks like it forced a specific model even when the user
+      // is relying on config.toml defaults.
       upsertGlobal({
         id: newLocalId("sessionConfigured"),
         type: "info",
