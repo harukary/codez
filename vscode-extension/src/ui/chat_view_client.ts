@@ -3703,7 +3703,17 @@ function main(): void {
     const backendId = s.activeSession?.backendId ?? null;
     const modelKey = (m: { id?: string; model?: string } | null): string => {
       if (!m) return "";
-      return String((m as any).model || (m as any).id || "").trim();
+      return String((m as any).id || (m as any).model || "").trim();
+    };
+    const modelKeyAliases = (
+      m: { id?: string; model?: string } | null,
+    ): string[] => {
+      if (!m) return [];
+      const id = String((m as any).id || "").trim();
+      const model = String((m as any).model || "").trim();
+      return [id, model].filter(
+        (v, idx, arr) => Boolean(v) && arr.indexOf(v) === idx,
+      );
     };
     const opencodeDefaultKey =
       backendId === "opencode" ? String(s.opencodeDefaultModelKey || "") : "";
@@ -3743,7 +3753,7 @@ function main(): void {
       return "default (CLI config)";
     })();
     const modelKeys = new Set(
-      models.map((m) => modelKey(m)).filter((k) => Boolean(k)),
+      models.flatMap((m) => modelKeyAliases(m)).filter((k) => Boolean(k)),
     );
     const visibleModels = models.filter((m) => {
       const upgrade = typeof m.upgrade === "string" ? m.upgrade.trim() : "";

@@ -1001,7 +1001,8 @@ export class BackendManager implements vscode.Disposable {
     const byKey = new Map<string, Model>();
     for (const raw of out) {
       const m = normalize(raw);
-      const key = m.model || m.id;
+      // Prefer id as the stable key. `model` may collide across different ids in the future.
+      const key = m.id || m.model;
       if (!key) continue;
 
       const existing = byKey.get(key);
@@ -1015,6 +1016,10 @@ export class BackendManager implements vscode.Disposable {
         // Prefer keeping the first-seen metadata, but don't lose defaults/upgrades.
         isDefault: Boolean(existing.isDefault) || Boolean(m.isDefault),
         upgrade: existing.upgrade ?? m.upgrade,
+        // Fill gaps if earlier entry had empty-ish fields.
+        model: existing.model || m.model,
+        displayName: existing.displayName || m.displayName,
+        description: existing.description || m.description,
       });
     }
 
