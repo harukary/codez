@@ -1680,7 +1680,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       .hydrateBannerBtn.primary { background: var(--vscode-button-background, rgba(0,120,212,0.18)); border-color: var(--vscode-button-border, rgba(0,120,212,0.45)); color: var(--vscode-button-foreground, inherit); }
       .hydrateBannerBtn:disabled { opacity: 0.5; cursor: default; }
       .approvals { padding: 12px; border-bottom: 1px solid rgba(127,127,127,0.25); display: flex; flex-direction: column; gap: 10px; }
-      .approvalTip { font-size: 12px; opacity: 0.8; line-height: 1.4; white-space: pre-wrap; }
       .approval { border: 1px solid rgba(127,127,127,0.25); border-radius: 10px; padding: 10px 12px; background: rgba(255, 120, 0, 0.10); }
       .approvalTitle { font-weight: 600; margin-bottom: 6px; }
       .approvalActions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
