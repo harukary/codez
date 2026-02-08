@@ -4283,6 +4283,10 @@ function main(): void {
       approvalsEl.innerHTML = "";
       if (approvalsVisible) {
         approvalsEl.style.display = "";
+        const tip = el("div", "approvalTip");
+        tip.textContent =
+          "Tip: 続行するには Accept を選択してください。Decline/Cancel は実行中の turn を停止します。";
+        approvalsEl.appendChild(tip);
         for (const ap of approvals) {
           const card = el("div", "approval");
           const t = el("div", "approvalTitle");
