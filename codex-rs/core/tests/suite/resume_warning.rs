@@ -72,15 +72,15 @@ async fn emits_warning_when_resumed_model_differs() {
         .await
         .expect("resume conversation");
 
-    // Assert: the resumed session inherits the model that was recorded in the rollout,
-    // so there is no mismatch warning to emit.
-    assert_eq!(session_configured.model, "previous-model");
-    let warning = tokio::time::timeout(
-        Duration::from_millis(200),
+    // Assert: when a model is explicitly configured, it takes effect on resume.
+    // Since the rollout was recorded under a different model, a mismatch warning is emitted.
+    assert_eq!(session_configured.model, "current-model");
+    tokio::time::timeout(
+        Duration::from_secs(1),
         wait_for_event(&conversation, |ev| matches!(ev, EventMsg::Warning(_))),
     )
-    .await;
-    assert!(warning.is_err(), "unexpected mismatch warning emitted");
+    .await
+    .expect("expected mismatch warning to be emitted");
 
     // Drain the TurnComplete/Shutdown window to avoid leaking tasks between tests.
     tokio::time::sleep(Duration::from_millis(50)).await;
