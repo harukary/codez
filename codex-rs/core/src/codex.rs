@@ -486,9 +486,10 @@ fn resolve_session_collaboration_settings(
         return (fallback_settings, fallback_summary);
     };
 
-    // If the user provided a model override outside config layers (e.g. CLI `--model`),
-    // it should take precedence over the session's previously used model.
-    let override_model = config.did_user_override_model;
+    // When resuming/forking, prefer the last recorded model unless the current config
+    // explicitly pins a model. (This matches the core resume tests, which expect a
+    // configured model to take effect on resume.)
+    let override_model = config.model.is_some() || config.did_user_override_model;
     (
         Settings {
             model: if override_model {
