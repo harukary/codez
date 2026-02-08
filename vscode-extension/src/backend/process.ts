@@ -87,7 +87,9 @@ export class BackendProcess implements vscode.Disposable {
     | ((req: V2ApprovalRequest) => Promise<V2ApprovalDecision>)
     | null = null;
   public onRequestUserInput:
-    | ((req: V2ToolRequestUserInputRequest) => Promise<ToolRequestUserInputResponse>)
+    | ((
+        req: V2ToolRequestUserInputRequest,
+      ) => Promise<ToolRequestUserInputResponse>)
     | null = null;
 
   private constructor(

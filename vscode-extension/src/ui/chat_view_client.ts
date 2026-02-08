@@ -172,7 +172,11 @@ type ChatBlock =
       type: "actionCard";
       title: string;
       text: string;
-      actions: Array<{ id: string; label: string; style?: "primary" | "default" }>;
+      actions: Array<{
+        id: string;
+        label: string;
+        style?: "primary" | "default";
+      }>;
     };
 
 type ChatViewState = {
@@ -923,7 +927,8 @@ function main(): void {
     scope: "global" | "input",
   ): boolean {
     const isCtrlShiftOnly =
-      ((e.key === "Shift" && e.ctrlKey) || (e.key === "Control" && e.shiftKey)) &&
+      ((e.key === "Shift" && e.ctrlKey) ||
+        (e.key === "Control" && e.shiftKey)) &&
       !e.altKey &&
       !e.metaKey &&
       !e.repeat;
@@ -1267,8 +1272,10 @@ function main(): void {
   const tabElBySessionId = new Map<string, HTMLDivElement>();
   let draggingWorkspaceUri: string | null = null;
   let draggingLabelEl: HTMLElement | null = null;
-  let draggingSession: { workspaceFolderUri: string; sessionId: string } | null =
-    null;
+  let draggingSession: {
+    workspaceFolderUri: string;
+    sessionId: string;
+  } | null = null;
   let dropIndicatorEl: HTMLElement | null = null;
   let dropIndicatorKind: "dropBefore" | "dropAfter" | null = null;
   let isComposing = false;
@@ -3694,15 +3701,21 @@ function main(): void {
     modeBadgeEl.style.display = s.activeSession ? "" : "none";
     const models = s.models ?? [];
     const backendId = s.activeSession?.backendId ?? null;
+    const modelKey = (m: { id?: string; model?: string } | null): string => {
+      if (!m) return "";
+      return String((m as any).model || (m as any).id || "").trim();
+    };
     const opencodeDefaultKey =
       backendId === "opencode" ? String(s.opencodeDefaultModelKey || "") : "";
     const opencodeDefaultDisplay = (() => {
       if (backendId !== "opencode") return null;
       if (!opencodeDefaultKey) return "default (opencode config)";
       const match = models.find(
-        (m) => (m.model || m.id) === opencodeDefaultKey,
+        (m) => modelKey(m) === opencodeDefaultKey.trim(),
       );
-      const label = match?.displayName ? match.displayName : opencodeDefaultKey;
+      const label = match?.displayName
+        ? String(match.displayName).trim()
+        : opencodeDefaultKey.trim();
       return `default (opencode: ${label})`;
     })();
     const cliDefaultDisplay = (() => {
@@ -3724,12 +3737,14 @@ function main(): void {
           backendDefault.displayName ||
             backendDefault.model ||
             backendDefault.id,
-        );
+        ).trim();
         return `default (${backendId || "backend"}: ${label})`;
       }
       return "default (CLI config)";
     })();
-    const modelKeys = new Set(models.map((m) => String(m.model || m.id)));
+    const modelKeys = new Set(
+      models.map((m) => modelKey(m)).filter((k) => Boolean(k)),
+    );
     const visibleModels = models.filter((m) => {
       const upgrade = typeof m.upgrade === "string" ? m.upgrade.trim() : "";
       // If a model is known to be auto-upgraded to another model that we can already
@@ -3741,7 +3756,7 @@ function main(): void {
       const out: typeof visibleModels = [];
       const seen = new Set<string>();
       for (const m of visibleModels) {
-        const key = String(m.model || m.id);
+        const key = modelKey(m);
         if (!key) continue;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -3752,9 +3767,9 @@ function main(): void {
     const modelOptions = [
       { value: "default", label: "default" },
       ...dedupedModels.map((m) => ({
-        value: String(m.model || m.id),
+        value: modelKey(m),
         label: (() => {
-          const base = String(m.displayName || m.model || m.id);
+          const base = String(m.displayName || m.model || m.id).trim();
           const upgrade =
             typeof m.upgrade === "string" && m.upgrade.trim()
               ? ` (upgrade → ${m.upgrade.trim()})`
@@ -3768,7 +3783,7 @@ function main(): void {
       if (backendId === "opencode") {
         if (!opencodeDefaultKey) return "default";
         const match = models.find(
-          (m) => (m.model || m.id) === opencodeDefaultKey,
+          (m) => modelKey(m) === opencodeDefaultKey.trim(),
         );
         return String(match?.displayName || opencodeDefaultKey);
       }
@@ -3795,7 +3810,10 @@ function main(): void {
     })();
     modelSelect.title = selectedModelKey === "default" ? defaultModelLabel : "";
     populateSelectWithLabels(modelSelect, modelOptions, ms.model, {
-      defaultLabel: defaultModelLabel,
+      defaultLabel:
+        (backendId === "opencode"
+          ? opencodeDefaultDisplay
+          : cliDefaultDisplay) ?? `default (${defaultModelLabel})`,
     });
 
     const effortOptions = (() => {
@@ -4170,7 +4188,11 @@ function main(): void {
               return;
             }
             const active = state.activeSession?.id ?? null;
-            if (active && sess.id !== active && (state.approvals || []).length > 0) {
+            if (
+              active &&
+              sess.id !== active &&
+              (state.approvals || []).length > 0
+            ) {
               showToast("info", "承認を選択して続行してください。");
               return;
             }
@@ -4181,7 +4203,9 @@ function main(): void {
             vscode.postMessage({ type: "sessionMenu", sessionId: sess.id });
           });
           div.addEventListener("dragstart", (e) => {
-            const workspaceFolderUri = String(div.dataset.workspaceFolderUri || "");
+            const workspaceFolderUri = String(
+              div.dataset.workspaceFolderUri || "",
+            );
             const sessionId = String(div.dataset.sessionId || "");
             if (!workspaceFolderUri || !sessionId) return;
             draggingSession = { workspaceFolderUri, sessionId };
@@ -4200,7 +4224,8 @@ function main(): void {
             );
             const targetSessionId = String(div.dataset.sessionId || "");
             if (!targetWorkspaceUri || !targetSessionId) return;
-            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri) return;
+            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri)
+              return;
             if (draggingSession.sessionId === targetSessionId) return;
             e.preventDefault();
             if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
@@ -4216,7 +4241,8 @@ function main(): void {
             );
             const targetSessionId = String(div.dataset.sessionId || "");
             if (!targetWorkspaceUri || !targetSessionId) return;
-            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri) return;
+            if (draggingSession.workspaceFolderUri !== targetWorkspaceUri)
+              return;
             if (draggingSession.sessionId === targetSessionId) return;
             e.preventDefault();
             e.stopPropagation();
@@ -5473,10 +5499,7 @@ function main(): void {
     if (!trimmed && pendingImages.length === 0) return;
     if (pendingImages.length > 0) {
       if (!allowsImageInputs(state)) {
-        showToast(
-          "info",
-          "選択中のモデルは画像入力に対応していません。",
-        );
+        showToast("info", "選択中のモデルは画像入力に対応していません。");
         return;
       }
       vscode.postMessage({

@@ -200,7 +200,10 @@ export class BackendManager implements vscode.Disposable {
     | ((
         session: Session,
         req: V2ToolRequestUserInputRequest,
-      ) => Promise<{ cancelled: boolean; answersById: Record<string, string[]> }>)
+      ) => Promise<{
+        cancelled: boolean;
+        answersById: Record<string, string[]>;
+      }>)
     | null = null;
   public onServerEvent:
     | ((
@@ -762,7 +765,9 @@ export class BackendManager implements vscode.Disposable {
 
   public async writeConfigValueForSession(
     session: Session,
-    params: Omit<ConfigValueWriteParams, "filePath"> & { filePath?: string | null },
+    params: Omit<ConfigValueWriteParams, "filePath"> & {
+      filePath?: string | null;
+    },
   ): Promise<ConfigWriteResponse> {
     if (session.backendId === "opencode") {
       throw new Error("opencode backend does not support config/value/write");
@@ -981,7 +986,39 @@ export class BackendManager implements vscode.Disposable {
       cursor = res.nextCursor;
       if (!cursor) break;
     }
-    return out;
+    const normalize = (m: Model): Model => {
+      const id = String(m.id ?? "").trim();
+      const model = String(m.model ?? "").trim();
+      const displayName = String(m.displayName ?? "").trim();
+      const upgradeRaw = typeof m.upgrade === "string" ? m.upgrade.trim() : "";
+      const upgrade = upgradeRaw ? upgradeRaw : null;
+      const description = String(m.description ?? "").trim();
+      return { ...m, id, model, displayName, upgrade, description };
+    };
+
+    // Defensive: collapse duplicates so UI doesn't show repeated entries due to
+    // backend quirks (e.g. whitespace or repeated pages).
+    const byKey = new Map<string, Model>();
+    for (const raw of out) {
+      const m = normalize(raw);
+      const key = m.model || m.id;
+      if (!key) continue;
+
+      const existing = byKey.get(key);
+      if (!existing) {
+        byKey.set(key, m);
+        continue;
+      }
+
+      byKey.set(key, {
+        ...existing,
+        // Prefer keeping the first-seen metadata, but don't lose defaults/upgrades.
+        isDefault: Boolean(existing.isDefault) || Boolean(m.isDefault),
+        upgrade: existing.upgrade ?? m.upgrade,
+      });
+    }
+
+    return [...byKey.values()];
   }
 
   private async fetchAllApps(proc: BackendProcess): Promise<AppInfo[]> {

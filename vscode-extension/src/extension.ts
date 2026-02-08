@@ -82,10 +82,7 @@ type CachedImageMeta = {
 type ActionCardState =
   | {
       kind: "personality";
-      actions: Map<
-        string,
-        { label: string; personality: Personality | null }
-      >;
+      actions: Map<string, { label: string; personality: Personality | null }>;
     }
   | { kind: "apps"; actions: Map<string, { app: AppInfo }> }
   | { kind: "mcp"; actions: Map<string, { action: "refresh" }> }
@@ -2159,7 +2156,9 @@ export function activate(context: vscode.ExtensionContext): void {
         );
 
         const currentName = session.collaborationModePresetName ?? null;
-        const currentIndex = candidates.findIndex((c) => c.name === currentName);
+        const currentIndex = candidates.findIndex(
+          (c) => c.name === currentName,
+        );
         const next = candidates[(currentIndex + 1) % candidates.length]!;
 
         session.collaborationModePresetName = next.name;
@@ -2348,7 +2347,9 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!position) return;
 
         const all = sessions.listAll();
-        const existingWorkspaces = new Set<string>(uniqueWorkspacesInOrder(all));
+        const existingWorkspaces = new Set<string>(
+          uniqueWorkspacesInOrder(all),
+        );
         if (!existingWorkspaces.has(workspaceFolderUri)) return;
         if (
           targetWorkspaceFolderUri &&
@@ -2465,7 +2466,9 @@ export function activate(context: vscode.ExtensionContext): void {
         const prevWorkspaceOrder = tabOrder.workspaceOrder;
         tabOrder.workspaceOrder = stillHasWorkspace
           ? prevWorkspaceOrder
-          : prevWorkspaceOrder.filter((wk) => wk !== session.workspaceFolderUri);
+          : prevWorkspaceOrder.filter(
+              (wk) => wk !== session.workspaceFolderUri,
+            );
         const prevIds =
           tabOrder.sessionOrderByWorkspace[session.workspaceFolderUri] ?? null;
         if (prevIds) {
@@ -3252,8 +3255,7 @@ async function sendUserInput(
       try {
         const models = await backendManager.listModelsForSession(session);
         finalModel =
-          models.find((m) => m.isDefault)?.model ??
-          (models[0]?.model ?? null);
+          models.find((m) => m.isDefault)?.model ?? models[0]?.model ?? null;
       } catch (err) {
         outputChannel?.appendLine(
           `[collab] Failed to resolve model via model/list: ${formatUnknownError(err)}`,
@@ -3406,7 +3408,9 @@ function formatRequestUserInputAnswers(
       continue;
     }
     const answers = answersById[q.id] ?? [];
-    lines.push(`- ${label}: ${answers.length > 0 ? answers.join(", ") : "(empty)"}`);
+    lines.push(
+      `- ${label}: ${answers.length > 0 ? answers.join(", ") : "(empty)"}`,
+    );
   }
   return lines.join("\n");
 }
@@ -3696,9 +3700,9 @@ async function handleSlashCommand(
 
     if (!backendManager) throw new Error("backendManager is not initialized");
     const config = await backendManager.readConfigForSession(session);
-    const features = (((config.config as unknown as Record<string, unknown>)[
-      "features"
-    ] ?? {}) as Record<string, unknown>) || {};
+    const features =
+      (((config.config as unknown as Record<string, unknown>)["features"] ??
+        {}) as Record<string, unknown>) || {};
     const specs = [
       {
         key: "shell_snapshot",
@@ -3735,7 +3739,8 @@ async function handleSlashCommand(
     if (!picked) return true;
 
     const selected = new Set(picked.map((item) => item.key));
-    const preferredPath = await resolvePreferredConfigWritePathForSession(session);
+    const preferredPath =
+      await resolvePreferredConfigWritePathForSession(session);
     let changed = 0;
     for (const spec of specs) {
       const enabled = selected.has(spec.key);
@@ -4835,7 +4840,11 @@ async function resolvePreferredConfigWritePathForSession(
 ): Promise<string | null> {
   const folder = resolveWorkspaceFolderForSession(session);
   if (!folder) return null;
-  const projectConfigPath = path.join(folder.uri.fsPath, ".codex", "config.toml");
+  const projectConfigPath = path.join(
+    folder.uri.fsPath,
+    ".codex",
+    "config.toml",
+  );
   try {
     await fs.access(projectConfigPath);
     return projectConfigPath;
@@ -5114,7 +5123,9 @@ function listAllSessionsOrdered(store: SessionStore): Session[] {
 }
 
 function listVisibleTabSessionsOrdered(store: SessionStore): Session[] {
-  return listAllSessionsOrdered(store).filter((s) => !hiddenTabSessionIds.has(s.id));
+  return listAllSessionsOrdered(store).filter(
+    (s) => !hiddenTabSessionIds.has(s.id),
+  );
 }
 
 function loadWorkspaceColorOverrides(
@@ -5172,6 +5183,9 @@ function setCustomPrompts(next: CustomPromptSummary[]): void {
 async function loadInitialModelState(
   output: vscode.OutputChannel,
 ): Promise<void> {
+  output.appendLine(
+    `[config] resolveCodexHome=${resolveCodexHome()} CODEX_HOME=${String(process.env["CODEX_HOME"] || "")}`,
+  );
   const fromHome = await readModelStateFromCodexHomeConfig(output);
   const picked = fromHome;
   if (!picked) {
@@ -6315,8 +6329,7 @@ function applyItemLifecycle(
       const receiverThreadIds = Array.isArray(item.receiverThreadIds)
         ? item.receiverThreadIds.map((id) => String(id))
         : [];
-      const prompt =
-        typeof item.prompt === "string" ? item.prompt.trim() : "";
+      const prompt = typeof item.prompt === "string" ? item.prompt.trim() : "";
       const agentsStates =
         item.agentsStates && typeof item.agentsStates === "object"
           ? (item.agentsStates as Record<
@@ -6336,8 +6349,7 @@ function applyItemLifecycle(
         .sort()
         .map((id) => {
           const state = agentsStates[id] ?? {};
-          const status =
-            typeof state.status === "string" ? state.status : "";
+          const status = typeof state.status === "string" ? state.status : "";
           const message =
             typeof state.message === "string" ? state.message.trim() : "";
           if (!status && !message) return "";
@@ -7633,7 +7645,9 @@ function applyGlobalNotification(
           ? ((p as any).sessionId as string)
           : null;
       const session =
-        threadId && sessions ? sessions.getByThreadId(backendKey, threadId) : null;
+        threadId && sessions
+          ? sessions.getByThreadId(backendKey, threadId)
+          : null;
       if (session && !isSessionModelOverrideExplicit(session.id)) {
         const st = getSessionModelState(session.id);
         if (st.model || st.provider || st.reasoning || st.agent) {

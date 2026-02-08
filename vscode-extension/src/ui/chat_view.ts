@@ -147,7 +147,11 @@ export type ChatBlock =
       type: "actionCard";
       title: string;
       text: string;
-      actions: Array<{ id: string; label: string; style?: "primary" | "default" }>;
+      actions: Array<{
+        id: string;
+        label: string;
+        style?: "primary" | "default";
+      }>;
     };
 
 export type ChatViewState = {
@@ -293,7 +297,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private opencodeAgentsCacheSessionId: string | null = null;
   private readonly pendingRequestUserInput = new Map<
     string,
-    (resp: { cancelled: boolean; answersById: Record<string, string[]> }) => void
+    (resp: {
+      cancelled: boolean;
+      answersById: Record<string, string[]>;
+    }) => void
   >();
 
   public insertIntoInput(text: string): void {
@@ -653,13 +660,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         | undefined;
       const cancelled = Boolean(response?.cancelled);
       const answersById: Record<string, string[]> = {};
-      if (response && typeof response.answers === "object" && response.answers) {
+      if (
+        response &&
+        typeof response.answers === "object" &&
+        response.answers
+      ) {
         for (const [key, val] of Object.entries(
           response.answers as Record<string, unknown>,
         )) {
           const raw = (val as any)?.answers;
           if (Array.isArray(raw))
-            answersById[key] = raw.map((v) => String(v ?? "").trim()).filter(Boolean);
+            answersById[key] = raw
+              .map((v) => String(v ?? "").trim())
+              .filter(Boolean);
         }
       }
       const resolver = this.pendingRequestUserInput.get(requestKey);
