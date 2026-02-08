@@ -218,6 +218,7 @@ type ChatViewState = {
     detail: string;
     canAcceptForSession: boolean;
   }>;
+  approvalSessionIds?: string[];
   customPrompts?: Array<{
     name: string;
     description: string | null;
@@ -3978,6 +3979,7 @@ function main(): void {
     const sessionsList = s.sessions || [];
     const unread = new Set<string>(s.unreadSessionIds || []);
     const running = new Set<string>(s.runningSessionIds || []);
+    const approvalsNeeded = new Set<string>(s.approvalSessionIds || []);
     const activeId = s.activeSession ? s.activeSession.id : null;
     const workspaceColorOverrides = s.workspaceColorOverrides || {};
     const overridesSig = workspaceOverridesSig(workspaceColorOverrides);
@@ -3999,7 +4001,8 @@ function main(): void {
         const isUnread = unread.has(sess.id);
         const isRunning = running.has(sess.id);
         const isActive = activeId === sess.id;
-        const needsInput = hasPendingRequestUserInput(sess.id);
+        const needsApproval = approvalsNeeded.has(sess.id);
+        const needsInput = hasPendingRequestUserInput(sess.id) || needsApproval;
         const displayIdx = displayIndexBySessionId.get(sess.id) ?? -1;
         const dt = getSessionDisplayTitle(sess, displayIdx);
         return [
@@ -4011,6 +4014,7 @@ function main(): void {
           isRunning ? "r" : "",
           isUnread ? "u" : "",
           needsInput ? "i" : "",
+          needsApproval ? "p" : "",
         ].join("\t");
       })
       .join("\n");
@@ -4030,9 +4034,13 @@ function main(): void {
         const isUnread = unread.has(sess.id);
         const isRunning = running.has(sess.id);
         const isActive = activeId === sess.id;
-        const needsInput = hasPendingRequestUserInput(sess.id);
+        const needsApproval = approvalsNeeded.has(sess.id);
+        const needsInput = hasPendingRequestUserInput(sess.id) || needsApproval;
         const displayIdx = displayIndexBySessionId.get(sess.id) ?? -1;
         const dt = getSessionDisplayTitle(sess, displayIdx);
+        const tooltip = needsApproval
+          ? `${dt.tooltip}\n\nApproval required`
+          : dt.tooltip;
 
         const groupKey = sess.workspaceFolderUri;
         let groupEl = groupElByWorkspaceUri.get(groupKey);
@@ -4141,6 +4149,11 @@ function main(): void {
               showToast("info", "Answer the questions to continue.");
               return;
             }
+            const active = state.activeSession?.id ?? null;
+            if (active && sess.id !== active && (state.approvals || []).length > 0) {
+              showToast("info", "承認を選択して続行してください。");
+              return;
+            }
             vscode.postMessage({ type: "selectSession", sessionId: sess.id });
           });
           div.addEventListener("contextmenu", (e) => {
@@ -4209,7 +4222,7 @@ function main(): void {
           (needsInput ? " needsInput" : "") +
           (isRunning ? " running" : isUnread ? " unread" : "");
         if (div.textContent !== dt.label) div.textContent = dt.label;
-        if (div.title !== dt.tooltip) div.title = dt.tooltip;
+        if (div.title !== tooltip) div.title = tooltip;
         groupTabsEl.appendChild(div);
       });
 

@@ -25,6 +25,8 @@
   - セッションタブを backendId（opencode / codez）でフィルタリング。アクティブセッションと同じ backend のセッションのみ表示されるように変更
   - セッション番号付けを Sessions ツリーと一致（ワークスペース+backend 単位の連番）
   - タブをドラッグ&ドロップで並び替え（プロジェクト単位 / プロジェクト内セッション単位）
+- **Approvals**
+  - approval が必要なセッションのタブを「入力待ち」と同じ強調表示にし、別タブへ移動しようとしたときに案内を表示
 - **OpenCode / Agent Mode**
   - OpenCodeのAgentモード（Build/Plan）切り替えをサポート
   - opencodeセッション時にモデルセレクターの左にAgentセレクターを表示

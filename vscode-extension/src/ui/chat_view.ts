@@ -199,6 +199,9 @@ export type ChatViewState = {
     detail: string;
     canAcceptForSession: boolean;
   }>;
+  // Session ids that currently require an approval decision (e.g. command/file change approvals).
+  // Used to tint the tab like request_user_input does.
+  approvalSessionIds?: string[];
 };
 
 type RewindRequest = {

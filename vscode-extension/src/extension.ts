@@ -5558,6 +5558,7 @@ function buildChatState(): ChatViewState {
       models: null,
       collaborationModeLabel: null,
       approvals: [],
+      approvalSessionIds: [],
       customPrompts: promptSummaries,
     };
 
@@ -5566,6 +5567,9 @@ function buildChatState(): ChatViewState {
     .map((s) => (ensureRuntime(s.id).sending ? s.id : null))
     .filter((v): v is string => typeof v === "string");
   const activeRaw = activeSessionId ? sessions.getById(activeSessionId) : null;
+  const approvalSessionIds = tabSessionsRaw
+    .map((s) => (ensureRuntime(s.id).pendingApprovals.size > 0 ? s.id : null))
+    .filter((v): v is string => typeof v === "string");
   if (!activeRaw)
     return {
       globalBlocks: globalRuntime.blocks,
@@ -5589,6 +5593,7 @@ function buildChatState(): ChatViewState {
       modelState: getSessionModelState(null),
       collaborationModeLabel: null,
       approvals: [],
+      approvalSessionIds,
       customPrompts: promptSummaries,
     };
 
@@ -5652,6 +5657,7 @@ function buildChatState(): ChatViewState {
       detail: v.detail,
       canAcceptForSession: v.canAcceptForSession,
     })),
+    approvalSessionIds,
     customPrompts: promptSummaries,
   };
 }
