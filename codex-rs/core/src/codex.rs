@@ -1577,10 +1577,6 @@ impl Session {
         }
 
         let model_instructions = next.model_info.get_model_instructions(next.personality);
-        if model_instructions.is_empty() {
-            return None;
-        }
-
         Some(DeveloperInstructions::model_switch_message(model_instructions).into())
     }
 

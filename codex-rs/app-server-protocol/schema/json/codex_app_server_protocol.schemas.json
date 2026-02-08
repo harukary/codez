@@ -653,6 +653,30 @@
             },
             "method": {
               "enum": [
+                "thread/compact"
+              ],
+              "title": "Thread/compactRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ThreadCompactParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/compactRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
                 "thread/list"
               ],
               "title": "Thread/listRequestMethod",
@@ -1074,6 +1098,55 @@
             "method"
           ],
           "title": "Account/logoutRequest",
+          "type": "object"
+        },
+        {
+          "description": "CODEZ - List configured accounts (multi-account support).",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/list"
+              ],
+              "title": "Account/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "id",
+            "method"
+          ],
+          "title": "Account/listRequest",
+          "type": "object"
+        },
+        {
+          "description": "CODEZ - Switch the active account (multi-account support).",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/switch"
+              ],
+              "title": "Account/switchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/SwitchAccountParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Account/switchRequest",
           "type": "object"
         },
         {
@@ -9685,6 +9758,14 @@
           }
         ]
       },
+      "AccountKind": {
+        "description": "CODEZ - A short summary of a configured account.",
+        "enum": [
+          "chatgpt",
+          "apiKey"
+        ],
+        "type": "string"
+      },
       "AccountLoginCompletedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -9723,9 +9804,43 @@
         "title": "AccountRateLimitsUpdatedNotification",
         "type": "object"
       },
+      "AccountSummary": {
+        "description": "CODEZ - A short account summary for account switching UIs.",
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AccountKind"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "AccountUpdatedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "activeAccount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "authMode": {
             "anyOf": [
               {
@@ -11535,6 +11650,29 @@
           "turnId"
         ],
         "title": "ItemStartedNotification",
+        "type": "object"
+      },
+      "ListAccountsResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "CODEZ - List available accounts (multi-account support).",
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/definitions/v2/AccountSummary"
+            },
+            "type": "array"
+          },
+          "activeAccount": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "title": "ListAccountsResponse",
         "type": "object"
       },
       "ListMcpServerStatusParams": {
@@ -13751,6 +13889,44 @@
           }
         ]
       },
+      "SwitchAccountParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "CODEZ - Switch the active account (multi-account support).",
+        "properties": {
+          "createIfMissing": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "createIfMissing",
+          "name"
+        ],
+        "title": "SwitchAccountParams",
+        "type": "object"
+      },
+      "SwitchAccountResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "description": "CODEZ - Switch account response (multi-account support).",
+        "properties": {
+          "activeAccount": {
+            "type": "string"
+          },
+          "migratedLegacy": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "activeAccount"
+        ],
+        "title": "SwitchAccountResponse",
+        "type": "object"
+      },
       "TerminalInteractionNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -13933,6 +14109,24 @@
       "ThreadArchiveResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": "ThreadArchiveResponse",
+        "type": "object"
+      },
+      "ThreadCompactParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "threadId"
+        ],
+        "title": "ThreadCompactParams",
+        "type": "object"
+      },
+      "ThreadCompactResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "ThreadCompactResponse",
         "type": "object"
       },
       "ThreadCompactStartParams": {

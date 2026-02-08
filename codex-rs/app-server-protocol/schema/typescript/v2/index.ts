@@ -1,8 +1,10 @@
 // GENERATED CODE! DO NOT MODIFY BY HAND!
 
 export type { Account } from "./Account";
+export type { AccountKind } from "./AccountKind";
 export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
 export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
+export type { AccountSummary } from "./AccountSummary";
 export type { AccountUpdatedNotification } from "./AccountUpdatedNotification";
 export type { AgentMessageDeltaNotification } from "./AgentMessageDeltaNotification";
 export type { AnalyticsConfig } from "./AnalyticsConfig";
@@ -65,6 +67,7 @@ export type { GetAccountResponse } from "./GetAccountResponse";
 export type { GitInfo } from "./GitInfo";
 export type { ItemCompletedNotification } from "./ItemCompletedNotification";
 export type { ItemStartedNotification } from "./ItemStartedNotification";
+export type { ListAccountsResponse } from "./ListAccountsResponse";
 export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
 export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
 export type { LoginAccountParams } from "./LoginAccountParams";
@@ -122,6 +125,8 @@ export type { SkillsRemoteReadParams } from "./SkillsRemoteReadParams";
 export type { SkillsRemoteReadResponse } from "./SkillsRemoteReadResponse";
 export type { SkillsRemoteWriteParams } from "./SkillsRemoteWriteParams";
 export type { SkillsRemoteWriteResponse } from "./SkillsRemoteWriteResponse";
+export type { SwitchAccountParams } from "./SwitchAccountParams";
+export type { SwitchAccountResponse } from "./SwitchAccountResponse";
 export type { TerminalInteractionNotification } from "./TerminalInteractionNotification";
 export type { TextElement } from "./TextElement";
 export type { TextPosition } from "./TextPosition";
@@ -129,6 +134,8 @@ export type { TextRange } from "./TextRange";
 export type { Thread } from "./Thread";
 export type { ThreadArchiveParams } from "./ThreadArchiveParams";
 export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";
+export type { ThreadCompactParams } from "./ThreadCompactParams";
+export type { ThreadCompactResponse } from "./ThreadCompactResponse";
 export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
 export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
 export type { ThreadForkParams } from "./ThreadForkParams";
