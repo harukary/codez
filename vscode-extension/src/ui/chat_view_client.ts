@@ -3737,9 +3737,21 @@ function main(): void {
       if (upgrade && modelKeys.has(upgrade)) return false;
       return true;
     });
+    const dedupedModels = (() => {
+      const out: typeof visibleModels = [];
+      const seen = new Set<string>();
+      for (const m of visibleModels) {
+        const key = String(m.model || m.id);
+        if (!key) continue;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(m);
+      }
+      return out;
+    })();
     const modelOptions = [
       { value: "default", label: "default" },
-      ...visibleModels.map((m) => ({
+      ...dedupedModels.map((m) => ({
         value: String(m.model || m.id),
         label: (() => {
           const base = String(m.displayName || m.model || m.id);

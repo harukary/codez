@@ -41,6 +41,7 @@ import {
   ChatViewProvider,
   getSessionModelState,
   hasSessionModelState,
+  isSessionModelOverrideExplicit,
   setDefaultModelState,
   setSessionModelState,
   type ChatBlock,
@@ -7622,6 +7623,28 @@ function applyGlobalNotification(
       // The selector represents user overrides (explicit picks) vs "default" (config-driven).
       // If we set it here, the UI looks like it forced a specific model even when the user
       // is relying on config.toml defaults.
+      //
+      // However, older versions of this extension accidentally wrote the backend's effective
+      // model into the selector state. If we can map this notification back to a session and
+      // the user hasn't explicitly overridden the model, clear that stale state so "default"
+      // behaves as expected.
+      const threadId =
+        typeof (p as any).sessionId === "string"
+          ? ((p as any).sessionId as string)
+          : null;
+      const session =
+        threadId && sessions ? sessions.getByThreadId(backendKey, threadId) : null;
+      if (session && !isSessionModelOverrideExplicit(session.id)) {
+        const st = getSessionModelState(session.id);
+        if (st.model || st.provider || st.reasoning || st.agent) {
+          setSessionModelState(session.id, {
+            model: null,
+            provider: null,
+            reasoning: null,
+            agent: null,
+          });
+        }
+      }
       upsertGlobal({
         id: newLocalId("sessionConfigured"),
         type: "info",

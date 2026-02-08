@@ -30,6 +30,8 @@
 - **Models**
   - backend が返す effective model をモデルセレクタへ自動反映しない（選択 UI は「ユーザーの明示的 override」vs「default(=config)」を表す）
   - upgrade 先が存在するモデル（`upgrade → ...`）を候補から除外して重複表示を抑制
+  - モデル候補を `model` キーで重複排除（同名が複数返るケースの表示崩れを防止）
+  - 旧バージョンが誤って書いた「effective model を override として保持してしまう状態」を、ユーザーが明示 override していない場合に自動クリア
 - **OpenCode / Agent Mode**
   - OpenCodeのAgentモード（Build/Plan）切り替えをサポート
   - opencodeセッション時にモデルセレクターの左にAgentセレクターを表示

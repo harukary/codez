@@ -227,6 +227,7 @@ let cliDefaultModelState: {
 export type ModelState = typeof EMPTY_MODEL_STATE;
 
 const modelStateBySessionId = new Map<string, ModelState>();
+const explicitModelOverrideBySessionId = new Set<string>();
 
 export function getSessionModelState(sessionId: string | null): ModelState {
   if (!sessionId) return cliDefaultModelState;
@@ -242,6 +243,10 @@ export function setSessionModelState(
   state: ModelState,
 ): void {
   modelStateBySessionId.set(sessionId, state);
+}
+
+export function isSessionModelOverrideExplicit(sessionId: string): boolean {
+  return explicitModelOverrideBySessionId.has(sessionId);
 }
 
 export function setDefaultModelState(state: ModelState): void {
@@ -1135,6 +1140,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const reasoning = asNullableString(anyMsg["reasoning"]);
       const agent = asNullableString(anyMsg["agent"]);
       setSessionModelState(sessionId, { model, provider, reasoning, agent });
+      // Only mark explicit overrides when the user picks a non-default value.
+      // This lets us distinguish between user intent and (older) UI bugs that
+      // accidentally wrote the backend's effective model into the selector state.
+      if (model || provider || reasoning || agent)
+        explicitModelOverrideBySessionId.add(sessionId);
+      else explicitModelOverrideBySessionId.delete(sessionId);
       this.refresh();
       return;
     }
