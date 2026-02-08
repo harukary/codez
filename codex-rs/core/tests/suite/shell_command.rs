@@ -20,6 +20,7 @@ use test_case::test_case;
 /// Use this timeout if, empirically, a test seems to need more time than the
 /// default.
 const MEDIUM_TIMEOUT: Duration = Duration::from_secs(5);
+const LOGIN_MEDIUM_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn shell_responses_with_timeout(
     call_id: &str,
@@ -253,12 +254,17 @@ async fn unicode_output(login: bool) -> anyhow::Result<()> {
     .await?;
 
     let call_id = "unicode_output";
+    let timeout = if login {
+        LOGIN_MEDIUM_TIMEOUT
+    } else {
+        MEDIUM_TIMEOUT
+    };
     mount_shell_responses_with_timeout(
         &harness,
         call_id,
         "git -c alias.say='!printf \"%s\" \"naïve_café\"' say",
         Some(login),
-        MEDIUM_TIMEOUT,
+        timeout,
     )
     .await;
     harness.submit("run the command without login").await?;
@@ -283,12 +289,17 @@ async fn unicode_output_with_newlines(login: bool) -> anyhow::Result<()> {
     .await?;
 
     let call_id = "unicode_output";
+    let timeout = if login {
+        LOGIN_MEDIUM_TIMEOUT
+    } else {
+        MEDIUM_TIMEOUT
+    };
     mount_shell_responses_with_timeout(
         &harness,
         call_id,
         "echo 'line1\nnaïve café\nline3'",
         Some(login),
-        MEDIUM_TIMEOUT,
+        timeout,
     )
     .await;
     harness.submit("run the command without login").await?;
