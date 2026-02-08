@@ -2129,6 +2129,13 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         const presets = await ensureCollaborationPresetsFetched(session);
+        if (presets.length === 0) {
+          chatView?.toast(
+            "info",
+            "collaboration preset が見つからないため、mode を切り替えできません。",
+          );
+          return;
+        }
         const modeOrder: Record<string, number> = {
           default: 0,
           plan: 1,
@@ -2140,19 +2147,18 @@ export function activate(context: vscode.ExtensionContext): void {
           return a.name.localeCompare(b.name);
         });
 
-        const candidates: Array<{ name: string | null; label: string }> = [
-          { name: null, label: "Default" },
-          ...sorted.map((p) => ({
+        // Cycle should always select an explicit preset name, not `null`.
+        // Setting `null` only clears the UI selection and does not reliably reset the
+        // backend's current collaboration mode (it may keep the previous mode).
+        const candidates: Array<{ name: string; label: string }> = sorted.map(
+          (p) => ({
             name: p.name,
             label: p.name,
-          })),
-        ];
+          }),
+        );
 
         const currentName = session.collaborationModePresetName ?? null;
-        const currentIndex = Math.max(
-          0,
-          candidates.findIndex((c) => c.name === currentName),
-        );
+        const currentIndex = candidates.findIndex((c) => c.name === currentName);
         const next = candidates[(currentIndex + 1) % candidates.length]!;
 
         session.collaborationModePresetName = next.name;
@@ -2162,7 +2168,7 @@ export function activate(context: vscode.ExtensionContext): void {
           id: newLocalId("collabToggle"),
           type: "system",
           title: "Collaboration mode",
-          text: `Mode set to ${next.label}.`,
+          text: `次のメッセージから '${next.label}' を適用します。`,
         });
         chatView?.refresh();
       },
