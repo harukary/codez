@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+_No changes._
+
+## 0.2.8
+
 - **Slash Commands**
   - `/apps` を追加（app 一覧から選択して `$<slug>` を入力欄へ挿入）
   - `/apps` / `/mcp` / `/personality` の実行結果をインタラクティブなカードで表示
@@ -30,8 +34,9 @@
 - **Models**
   - backend が返す effective model をモデルセレクタへ自動反映しない（選択 UI は「ユーザーの明示的 override」vs「default(=config)」を表す）
   - upgrade 先が存在するモデル（`upgrade → ...`）を候補から除外して重複表示を抑制
-  - モデル候補を `model` キーで重複排除（同名が複数返るケースの表示崩れを防止）
+  - モデル候補を `id` 優先で重複排除（同名が複数返るケースの表示崩れを防止）
   - 旧バージョンが誤って書いた「effective model を override として保持してしまう状態」を、ユーザーが明示 override していない場合に自動クリア
+  - codez セッションの `default` ラベルは、repo-local `./.codex/config.toml` を優先して表示（backend の `config/read` に合わせる）
 - **OpenCode / Agent Mode**
   - OpenCodeのAgentモード（Build/Plan）切り替えをサポート
   - opencodeセッション時にモデルセレクターの左にAgentセレクターを表示
