@@ -482,6 +482,8 @@ let globalRateLimitStatusTooltip: string | null = null;
 let customPrompts: CustomPromptSummary[] = [];
 const pendingModelFetchByBackend = new Map<string, Promise<void>>();
 const pendingCollaborationFetchByBackend = new Map<string, Promise<void>>();
+const configByBackendKey = new Map<string, ConfigReadResponse>();
+const pendingConfigFetchByBackend = new Map<string, Promise<void>>();
 const collaborationPresetsByBackend = new Map<
   string,
   CollaborationModeMask[]
@@ -5487,6 +5489,48 @@ function getModelOptionsForSession(session: Session | null): Model[] | null {
   return backendManager.getCachedModels(session);
 }
 
+function getUiDefaultModelState(session: Session | null): ModelState {
+  // For codez, repo-local `.codex/config.toml` may override (or completely replace) CODEX_HOME config.
+  // Prefer the backend's effective config when available, so the UI's "default (...)" label matches
+  // what the backend will actually use.
+  if (session && session.backendId === "codez") {
+    const cfg = configByBackendKey.get(session.backendKey)?.config ?? null;
+    if (cfg) {
+      return {
+        model: cfg.model ?? null,
+        provider: cfg.model_provider ?? null,
+        reasoning: cfg.model_reasoning_effort ?? null,
+        agent: null,
+      };
+    }
+  }
+  return getSessionModelState(null);
+}
+
+async function ensureConfigFetched(session: Session): Promise<void> {
+  if (!backendManager) return;
+  const backendKey = session.backendKey;
+  if (configByBackendKey.get(backendKey)) return;
+  const pending = pendingConfigFetchByBackend.get(backendKey);
+  if (pending) {
+    await pending;
+    return;
+  }
+  const promise = backendManager
+    .readConfigForSession(session)
+    .then((cfg) => {
+      configByBackendKey.set(backendKey, cfg);
+    })
+    .catch((err) => {
+      outputChannel?.appendLine(
+        `[config] Failed to read config/read: ${String((err as Error).message ?? err)}`,
+      );
+    })
+    .finally(() => pendingConfigFetchByBackend.delete(backendKey));
+  pendingConfigFetchByBackend.set(backendKey, promise);
+  await promise;
+}
+
 async function ensureModelsFetched(session: Session): Promise<void> {
   if (!backendManager) return;
   const backendKey = session.backendKey;
@@ -5498,7 +5542,10 @@ async function ensureModelsFetched(session: Session): Promise<void> {
   }
   const promise = backendManager
     .listModelsForSession(session)
-    .then(() => chatView?.refresh())
+    .then(async () => {
+      await ensureConfigFetched(session);
+      chatView?.refresh();
+    })
     .catch((err) => {
       outputChannel?.appendLine(
         `[models] Failed to list models: ${String((err as Error).message ?? err)}`,
@@ -5568,7 +5615,7 @@ function buildChatState(): ChatViewState {
         .filter(Boolean)
         .join(" • "),
       statusTooltip: globalRateLimitStatusTooltip,
-      cliDefaultModelState: getSessionModelState(null),
+      cliDefaultModelState: getUiDefaultModelState(null),
       modelState: getSessionModelState(null),
       models: null,
       collaborationModeLabel: null,
@@ -5604,7 +5651,7 @@ function buildChatState(): ChatViewState {
         .filter(Boolean)
         .join(" • "),
       statusTooltip: globalRateLimitStatusTooltip,
-      cliDefaultModelState: getSessionModelState(null),
+      cliDefaultModelState: getUiDefaultModelState(null),
       modelState: getSessionModelState(null),
       collaborationModeLabel: null,
       approvals: [],
@@ -5658,7 +5705,7 @@ function buildChatState(): ChatViewState {
       statusText ??
       [globalStatusText, globalRateLimitStatusText].filter(Boolean).join(" • "),
     statusTooltip: statusTooltipParts || null,
-    cliDefaultModelState: getSessionModelState(null),
+    cliDefaultModelState: getUiDefaultModelState(activeRaw),
     modelState: getSessionModelState(activeRaw.id),
     models: getModelOptionsForSession(activeRaw),
     collaborationModeLabel:
