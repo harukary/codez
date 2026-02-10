@@ -6,6 +6,11 @@
 
 _No changes._
 
+## 0.2.9
+
+- **Fix**
+  - Marketplace に publish した拡張が起動時にクラッシュし得る問題を修正（publish 時に `--no-dependencies` を使うと `@iarna/toml` / `shell-quote` が VSIX に含まれず `Cannot find module` で落ちるため、publish 手順を修正）
+
 ## 0.2.8
 
 - **Slash Commands**
