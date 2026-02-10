@@ -1268,6 +1268,7 @@ function main(): void {
   let rewindTurnIndex: number | null = null;
   const blockElByKey = new Map<string, HTMLElement>();
   let tabsSig: string | null = null;
+  let tabsSigPending: string | null = null;
   let approvalsSig: string | null = null;
   const tabElBySessionId = new Map<string, HTMLDivElement>();
   let draggingWorkspaceUri: string | null = null;
@@ -4068,9 +4069,15 @@ function main(): void {
       .join("\n");
 
     const sig = `${overridesSig}\n${nextTabsSig}`;
+    const isDraggingTabs = draggingWorkspaceUri !== null || draggingSession !== null;
 
-    if (tabsSig !== sig) {
+    if (isDraggingTabs) {
+      // If we rebuild the tab DOM while a drag is in progress, Chromium cancels the drag operation.
+      // Keep the existing DOM stable, and refresh once the drag ends.
+      if (tabsSig !== sig) tabsSigPending = sig;
+    } else if (tabsSig !== sig) {
       tabsSig = sig;
+      tabsSigPending = null;
       const frag = document.createDocumentFragment();
       const wanted = new Set<string>();
       const groupElByWorkspaceUri = new Map<string, HTMLDivElement>();
@@ -4115,13 +4122,23 @@ function main(): void {
             draggingWorkspaceUri = groupKey;
             draggingLabelEl = labelEl;
             labelEl.classList.add("dragging");
-            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              // Some webview environments require a payload for DnD to work reliably.
+              e.dataTransfer.setData("text/plain", groupKey);
+            }
           });
           labelEl.addEventListener("dragend", () => {
             draggingWorkspaceUri = null;
             if (draggingLabelEl) draggingLabelEl.classList.remove("dragging");
             draggingLabelEl = null;
             clearDropIndicator();
+            if (tabsSigPending !== null) {
+              // Force a refresh now that dragging has ended.
+              tabsSig = null;
+              tabsSigPending = null;
+              renderControl(state);
+            }
           });
           labelEl.addEventListener("dragover", (e) => {
             if (!draggingWorkspaceUri) return;
@@ -4220,12 +4237,22 @@ function main(): void {
             if (!workspaceFolderUri || !sessionId) return;
             draggingSession = { workspaceFolderUri, sessionId };
             div.classList.add("dragging");
-            if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = "move";
+              // Some webview environments require a payload for DnD to work reliably.
+              e.dataTransfer.setData("text/plain", sessionId);
+            }
           });
           div.addEventListener("dragend", () => {
             draggingSession = null;
             div.classList.remove("dragging");
             clearDropIndicator();
+            if (tabsSigPending !== null) {
+              // Force a refresh now that dragging has ended.
+              tabsSig = null;
+              tabsSigPending = null;
+              renderControl(state);
+            }
           });
           div.addEventListener("dragover", (e) => {
             if (!draggingSession) return;
