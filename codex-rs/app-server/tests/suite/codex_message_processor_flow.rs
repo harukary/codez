@@ -444,6 +444,7 @@ async fn test_send_user_turn_updates_sandbox_and_cwd_between_turns() -> Result<(
             approval_policy: AskForApproval::Never,
             sandbox_policy: SandboxPolicy::WorkspaceWrite {
                 writable_roots: vec![first_cwd.try_into()?],
+                read_only_access: Default::default(),
                 network_access: false,
                 exclude_tmpdir_env_var: false,
                 exclude_slash_tmp: false,
@@ -529,6 +530,7 @@ fn create_config_toml(codex_home: &Path, server_uri: &str) -> std::io::Result<()
             r#"
 model = "mock-model"
 approval_policy = "untrusted"
+sandbox_mode = "danger-full-access"
 
 model_provider = "mock_provider"
 
