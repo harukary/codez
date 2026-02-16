@@ -6,6 +6,7 @@ use crate::skills::model::SkillError;
 use crate::skills::model::SkillInterface;
 use crate::skills::model::SkillLoadOutcome;
 use crate::skills::model::SkillMetadata;
+use crate::skills::model::SkillPolicy;
 use crate::skills::model::SkillToolDependency;
 use crate::skills::system::system_cache_root_dir;
 use codex_app_server_protocol::ConfigLayerSource;
@@ -42,6 +43,8 @@ struct SkillMetadataFile {
     interface: Option<Interface>,
     #[serde(default)]
     dependencies: Option<Dependencies>,
+    #[serde(default)]
+    policy: Option<Policy>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -60,6 +63,12 @@ struct Dependencies {
     tools: Vec<DependencyTool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct Policy {
+    #[serde(default)]
+    allow_implicit_invocation: Option<bool>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct DependencyTool {
     #[serde(rename = "type")]
@@ -72,8 +81,6 @@ struct DependencyTool {
 }
 
 const SKILLS_FILENAME: &str = "SKILL.md";
-#[cfg(test)]
-const AGENTS_DIR_NAME: &str = ".agents";
 const SKILLS_METADATA_DIR: &str = "agents";
 const SKILLS_METADATA_FILENAME: &str = "openai.yaml";
 const SKILLS_DIR_NAME: &str = "skills";
@@ -179,7 +186,8 @@ fn skill_roots_from_layer_stack_inner(config_layer_stack: &ConfigLayerStack) -> 
                 });
             }
             ConfigLayerSource::User { .. } => {
-                // `$CODEX_HOME/skills` (user-installed skills).
+                // Deprecated user skills location (`$CODEX_HOME/skills`), kept for backward
+                // compatibility.
                 roots.push(SkillRoot {
                     path: config_folder.as_path().join(SKILLS_DIR_NAME),
                     scope: SkillScope::User,
@@ -214,16 +222,18 @@ fn skill_roots(config: &Config) -> Vec<SkillRoot> {
     skill_roots_from_layer_stack_inner(&config.config_layer_stack)
 }
 
-#[cfg(test)]
-pub(crate) fn skill_roots_from_layer_stack(
-    config_layer_stack: &ConfigLayerStack,
-) -> Vec<SkillRoot> {
-    skill_roots_from_layer_stack_inner(config_layer_stack)
-}
-
 pub(crate) fn skill_roots_from_layer_stack_with_agents(
     config_layer_stack: &ConfigLayerStack,
     _cwd: &Path,
+) -> Vec<SkillRoot> {
+    // codez: `.agents/skills` is intentionally not supported (for now). Keep the
+    // call shape for compatibility with upstream call sites.
+    skill_roots_from_layer_stack_inner(config_layer_stack)
+}
+
+#[cfg(test)]
+pub(crate) fn skill_roots_from_layer_stack(
+    config_layer_stack: &ConfigLayerStack,
 ) -> Vec<SkillRoot> {
     skill_roots_from_layer_stack_inner(config_layer_stack)
 }
@@ -383,7 +393,7 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         .as_deref()
         .map(sanitize_single_line)
         .filter(|value| !value.is_empty());
-    let (interface, dependencies) = load_skill_metadata(path);
+    let (interface, dependencies, policy) = load_skill_metadata(path);
 
     validate_len(&name, MAX_NAME_LEN, "name")?;
     validate_len(&description, MAX_DESCRIPTION_LEN, "description")?;
@@ -403,21 +413,28 @@ fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, Ski
         short_description,
         interface,
         dependencies,
+        policy,
         path: resolved_path,
         scope,
     })
 }
 
-fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<SkillDependencies>) {
+fn load_skill_metadata(
+    skill_path: &Path,
+) -> (
+    Option<SkillInterface>,
+    Option<SkillDependencies>,
+    Option<SkillPolicy>,
+) {
     // Fail open: optional metadata should not block loading SKILL.md.
     let Some(skill_dir) = skill_path.parent() else {
-        return (None, None);
+        return (None, None, None);
     };
     let metadata_path = skill_dir
         .join(SKILLS_METADATA_DIR)
         .join(SKILLS_METADATA_FILENAME);
     if !metadata_path.exists() {
-        return (None, None);
+        return (None, None, None);
     }
 
     let contents = match fs::read_to_string(&metadata_path) {
@@ -428,7 +445,7 @@ fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<Ski
                 path = metadata_path.display(),
                 label = SKILLS_METADATA_FILENAME
             );
-            return (None, None);
+            return (None, None, None);
         }
     };
 
@@ -440,13 +457,20 @@ fn load_skill_metadata(skill_path: &Path) -> (Option<SkillInterface>, Option<Ski
                 path = metadata_path.display(),
                 label = SKILLS_METADATA_FILENAME
             );
-            return (None, None);
+            return (None, None, None);
         }
     };
 
+    let SkillMetadataFile {
+        interface,
+        dependencies,
+        policy,
+    } = parsed;
+
     (
-        resolve_interface(parsed.interface, skill_dir),
-        resolve_dependencies(parsed.dependencies),
+        resolve_interface(interface, skill_dir),
+        resolve_dependencies(dependencies),
+        resolve_policy(policy),
     )
 }
 
@@ -493,6 +517,12 @@ fn resolve_dependencies(dependencies: Option<Dependencies>) -> Option<SkillDepen
     } else {
         Some(SkillDependencies { tools })
     }
+}
+
+fn resolve_policy(policy: Option<Policy>) -> Option<SkillPolicy> {
+    policy.map(|policy| SkillPolicy {
+        allow_implicit_invocation: policy.allow_implicit_invocation,
+    })
 }
 
 fn resolve_dependency_tool(tool: DependencyTool) -> Option<SkillToolDependency> {
@@ -980,6 +1010,7 @@ mod tests {
                         },
                     ],
                 }),
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1034,9 +1065,76 @@ interface:
                     default_prompt: Some("default prompt".to_string()),
                 }),
                 dependencies: None,
+                policy: None,
                 path: normalized(skill_path.as_path()),
                 scope: SkillScope::User,
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn loads_skill_policy_from_yaml() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "policy-skill", "from json");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+policy:
+  allow_implicit_invocation: false
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(
+            outcome.skills[0].policy,
+            Some(SkillPolicy {
+                allow_implicit_invocation: Some(false),
+            })
+        );
+        assert!(outcome.allowed_skills_for_implicit_invocation().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_skill_policy_defaults_to_allow_implicit_invocation() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let skill_path = write_skill(&codex_home, "demo", "policy-empty", "from json");
+        let skill_dir = skill_path.parent().expect("skill dir");
+
+        write_skill_metadata_at(
+            skill_dir,
+            r#"
+policy: {}
+"#,
+        );
+
+        let cfg = make_config(&codex_home).await;
+        let outcome = load_skills(&cfg);
+
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        assert_eq!(
+            outcome.skills[0].policy,
+            Some(SkillPolicy {
+                allow_implicit_invocation: None,
+            })
+        );
+        assert_eq!(
+            outcome.allowed_skills_for_implicit_invocation(),
+            outcome.skills
         );
     }
 
@@ -1083,6 +1181,7 @@ interface:
                     default_prompt: None,
                 }),
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1122,6 +1221,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1174,6 +1274,7 @@ interface:
                     default_prompt: None,
                 }),
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1214,6 +1315,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1257,6 +1359,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&shared_skill_path),
                 scope: SkillScope::User,
             }]
@@ -1316,6 +1419,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1351,6 +1455,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&shared_skill_path),
                 scope: SkillScope::Admin,
             }]
@@ -1390,6 +1495,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&linked_skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1408,9 +1514,10 @@ interface:
         fs::create_dir_all(&system_root).unwrap();
         symlink_dir(shared.path(), &system_root.join("shared"));
 
-        let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
-
+        let outcome = load_skills_from_roots([SkillRoot {
+            path: system_root,
+            scope: SkillScope::System,
+        }]);
         assert!(
             outcome.errors.is_empty(),
             "unexpected errors: {:?}",
@@ -1436,8 +1543,11 @@ interface:
             "should not load",
         );
 
-        let cfg = make_config(&codex_home).await;
-        let outcome = load_skills(&cfg);
+        let skills_root = codex_home.path().join("skills");
+        let outcome = load_skills_from_roots([SkillRoot {
+            path: skills_root,
+            scope: SkillScope::User,
+        }]);
 
         assert!(
             outcome.errors.is_empty(),
@@ -1452,6 +1562,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&within_depth_path),
                 scope: SkillScope::User,
             }]
@@ -1478,6 +1589,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1508,6 +1620,7 @@ interface:
                 short_description: Some("short summary".to_string()),
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::User,
             }]
@@ -1619,36 +1732,11 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
         );
-    }
-
-    #[tokio::test]
-    async fn loads_skills_from_agents_dir_without_codex_dir() {
-        let codex_home = tempfile::tempdir().expect("tempdir");
-        let repo_dir = tempfile::tempdir().expect("tempdir");
-        mark_as_git_repo(repo_dir.path());
-
-        let skill_path = write_skill_at(
-            &repo_dir.path().join(AGENTS_DIR_NAME).join(SKILLS_DIR_NAME),
-            "agents",
-            "agents-skill",
-            "from agents",
-        );
-        let cfg = make_config_for_cwd(&codex_home, repo_dir.path().to_path_buf()).await;
-
-        let outcome = load_skills(&cfg);
-        assert!(
-            outcome.errors.is_empty(),
-            "unexpected errors: {:?}",
-            outcome.errors
-        );
-        assert_eq!(outcome.skills, Vec::<SkillMetadata>::new());
-
-        // Avoid unused variable warning when `.agents/skills` is intentionally ignored.
-        let _ = skill_path;
     }
 
     #[tokio::test]
@@ -1697,6 +1785,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: normalized(&nested_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1706,6 +1795,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: normalized(&root_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1744,6 +1834,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1780,6 +1871,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -1820,6 +1912,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: normalized(&repo_skill_path),
                     scope: SkillScope::Repo,
                 },
@@ -1829,6 +1922,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: normalized(&user_skill_path),
                     scope: SkillScope::User,
                 },
@@ -1892,6 +1986,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: first_path,
                     scope: SkillScope::Repo,
                 },
@@ -1901,6 +1996,7 @@ interface:
                     short_description: None,
                     interface: None,
                     dependencies: None,
+                    policy: None,
                     path: second_path,
                     scope: SkillScope::Repo,
                 },
@@ -1971,6 +2067,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::Repo,
             }]
@@ -2028,6 +2125,7 @@ interface:
                 short_description: None,
                 interface: None,
                 dependencies: None,
+                policy: None,
                 path: normalized(&skill_path),
                 scope: SkillScope::System,
             }]
@@ -2035,7 +2133,7 @@ interface:
     }
 
     #[tokio::test]
-    async fn skill_roots_include_admin_with_lowest_priority_on_unix() {
+    async fn skill_roots_include_admin_with_lowest_priority() {
         let codex_home = tempfile::tempdir().expect("tempdir");
         let cfg = make_config(&codex_home).await;
 
@@ -2043,10 +2141,9 @@ interface:
             .into_iter()
             .map(|root| root.scope)
             .collect();
-        let mut expected = vec![SkillScope::User, SkillScope::System];
-        if cfg!(unix) {
-            expected.push(SkillScope::Admin);
-        }
-        assert_eq!(scopes, expected);
+        assert_eq!(
+            scopes,
+            vec![SkillScope::User, SkillScope::System, SkillScope::Admin]
+        );
     }
 }

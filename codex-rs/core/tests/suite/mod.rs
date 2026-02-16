@@ -36,6 +36,12 @@ pub static CODEX_ALIASES_TEMP_DIR: TestCodexAliasesGuard = unsafe {
 
     #[allow(clippy::unwrap_used)]
     let arg0 = arg0_dispatch().unwrap();
+
+    // Integration tests hard-code unified exec session IDs (e.g. 1000) in mock
+    // payloads, so we must force deterministic IDs in the core process manager.
+    // This is test-only global state and is safe to set before test threads start.
+    codex_core::test_support::set_deterministic_process_ids(true);
+
     // Restore the process environment immediately so later tests observe the
     // same CODEX_HOME state they started with.
     match previous_codex_home.as_ref() {

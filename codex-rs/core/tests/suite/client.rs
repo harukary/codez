@@ -55,6 +55,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use uuid::Uuid;
 use wiremock::Mock;
@@ -1420,11 +1421,18 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         .await
         .expect("responses stream to start");
 
-    while let Some(event) = stream.next().await {
-        if let Ok(ResponseEvent::Completed { .. }) = event {
-            break;
+    let mut completed = false;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while let Some(event) = stream.next().await {
+            if let Ok(ResponseEvent::Completed { .. }) = event {
+                completed = true;
+                break;
+            }
         }
-    }
+    })
+    .await
+    .expect("timed out waiting for response completion");
+    assert!(completed, "response stream ended before completion");
 
     let request = resp_mock.single_request();
     assert_eq!(request.path(), "/openai/responses");

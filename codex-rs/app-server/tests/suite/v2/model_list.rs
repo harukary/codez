@@ -79,6 +79,36 @@ async fn list_models_returns_all_models_with_large_limit() -> Result<()> {
             is_default: true,
         },
         Model {
+            id: "gpt-5.3-codex-spark".to_string(),
+            model: "gpt-5.3-codex-spark".to_string(),
+            upgrade: None,
+            display_name: "gpt-5.3-codex-spark".to_string(),
+            description: "Ultra-fast coding model.".to_string(),
+            supported_reasoning_efforts: vec![
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Low,
+                    description: "Fast responses with lighter reasoning".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::Medium,
+                    description: "Balances speed and reasoning depth for everyday tasks"
+                        .to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::High,
+                    description: "Greater reasoning depth for complex problems".to_string(),
+                },
+                ReasoningEffortOption {
+                    reasoning_effort: ReasoningEffort::XHigh,
+                    description: "Extra high reasoning depth for complex problems".to_string(),
+                },
+            ],
+            default_reasoning_effort: ReasoningEffort::Medium,
+            input_modalities: vec![InputModality::Text, InputModality::Image],
+            supports_personality: false,
+            is_default: false,
+        },
+        Model {
             id: "gpt-5.2-codex".to_string(),
             model: "gpt-5.2-codex".to_string(),
             upgrade: Some("gpt-5.3-codex".to_string()),
@@ -252,7 +282,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(second_response)?;
 
     assert_eq!(second_items.len(), 1);
-    assert_eq!(second_items[0].id, "gpt-5.2-codex");
+    assert_eq!(second_items[0].id, "gpt-5.3-codex-spark");
     let third_cursor = second_cursor.ok_or_else(|| anyhow!("cursor for third page"))?;
 
     let third_request = mcp
@@ -274,7 +304,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(third_response)?;
 
     assert_eq!(third_items.len(), 1);
-    assert_eq!(third_items[0].id, "gpt-5.2");
+    assert_eq!(third_items[0].id, "gpt-5.2-codex");
     let fourth_cursor = third_cursor.ok_or_else(|| anyhow!("cursor for fourth page"))?;
 
     let fourth_request = mcp
@@ -296,7 +326,7 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(fourth_response)?;
 
     assert_eq!(fourth_items.len(), 1);
-    assert_eq!(fourth_items[0].id, "gpt-5.1-codex-max");
+    assert_eq!(fourth_items[0].id, "gpt-5.2");
     let fifth_cursor = fourth_cursor.ok_or_else(|| anyhow!("cursor for fifth page"))?;
 
     let fifth_request = mcp
@@ -318,8 +348,30 @@ async fn list_models_pagination_works() -> Result<()> {
     } = to_response::<ModelListResponse>(fifth_response)?;
 
     assert_eq!(fifth_items.len(), 1);
-    assert_eq!(fifth_items[0].id, "gpt-5.1-codex-mini");
-    assert!(fifth_cursor.is_none());
+    assert_eq!(fifth_items[0].id, "gpt-5.1-codex-max");
+    let sixth_cursor = fifth_cursor.ok_or_else(|| anyhow!("cursor for sixth page"))?;
+
+    let sixth_request = mcp
+        .send_list_models_request(ModelListParams {
+            limit: Some(1),
+            cursor: Some(sixth_cursor.clone()),
+        })
+        .await?;
+
+    let sixth_response: JSONRPCResponse = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(sixth_request)),
+    )
+    .await??;
+
+    let ModelListResponse {
+        data: sixth_items,
+        next_cursor: sixth_cursor,
+    } = to_response::<ModelListResponse>(sixth_response)?;
+
+    assert_eq!(sixth_items.len(), 1);
+    assert_eq!(sixth_items[0].id, "gpt-5.1-codex-mini");
+    assert!(sixth_cursor.is_none());
     Ok(())
 }
 

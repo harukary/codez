@@ -462,7 +462,10 @@ impl RolloutRecorder {
         trace!("Resuming rollout from {path:?}");
         let text = tokio::fs::read_to_string(path).await?;
         if text.trim().is_empty() {
-            return Err(IoError::other("empty session file"));
+            return Err(IoError::new(
+                std::io::ErrorKind::InvalidData,
+                "empty session file",
+            ));
         }
 
         let mut items: Vec<RolloutItem> = Vec::new();
