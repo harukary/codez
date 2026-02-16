@@ -247,6 +247,17 @@
           ],
           "default": "prompt",
           "description": "Default decision for server-initiated approval requests."
+        },
+        "codez.ui.clearHistoryOnCompact": {
+          "type": "boolean",
+          "default": false,
+          "description": "After context compaction, clear the in-memory chat history to reduce memory usage (use 'Load history' to re-hydrate)."
+        },
+        "codez.ui.clearHistoryOnCompactKeepPairs": {
+          "type": "number",
+          "default": 10,
+          "minimum": 0,
+          "description": "When codez.ui.clearHistoryOnCompact is enabled, keep this many recent user/assistant pairs in the UI."
         }
       }
     }

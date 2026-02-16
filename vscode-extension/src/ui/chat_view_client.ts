@@ -1492,8 +1492,8 @@ function main(): void {
       help.className = "settingsHelp";
       help.textContent =
         settingsSessionBackendId === "opencode"
-          ? "opencode の履歴は codex/codez と互換がないため、このセッションを codex/codez へ引き継ぐことはできません。"
-          : "codex と codez は履歴形式が互換のため、このスレッドは codex/codez のどちらでも開き直せます（opencode へは引き継げません）。";
+          ? "opencode history is not compatible with codex/codez, so this session cannot be carried over to codex/codez."
+          : "codex and codez share a compatible history format, so you can reopen this thread in either codex or codez (but not in opencode).";
       sectionSession.appendChild(help);
 
       const actions = document.createElement("div");
@@ -1600,7 +1600,7 @@ function main(): void {
         const msg = document.createElement("div");
         msg.className = "settingsHelp";
         msg.textContent =
-          "アカウントの作成/切り替えは codez セッションのみ対応です。";
+          "Account creation/switching is supported for codez sessions only.";
         sectionAcct.appendChild(msg);
       }
 
@@ -1684,7 +1684,7 @@ function main(): void {
               const msg =
                 typeof (res.data as any).message === "string"
                   ? String((res.data as any).message)
-                  : "アカウントの作成/切り替えは codez 選択時のみ対応です。";
+                  : "Account creation/switching is supported when codez is selected.";
               showToast("info", msg, 4000);
               renderSettings();
               return;
@@ -1770,11 +1770,11 @@ function main(): void {
               const msg =
                 typeof (res.data as any).message === "string"
                   ? String((res.data as any).message)
-                  : "アカウントの作成/切り替えは codez 選択時のみ対応です。";
-              showToast("info", msg, 4000);
-              renderSettings();
-              return;
-            }
+                  : "Account creation/switching is supported when codez is selected.";
+                showToast("info", msg, 4000);
+                renderSettings();
+                return;
+              }
 
             const migratedLegacy =
               res.data &&
@@ -2375,7 +2375,7 @@ function main(): void {
       imgEl.style.cursor = "pointer";
       const caption = (imageRef.caption || "").trim();
       captionEl.textContent =
-        caption || "画像はオフロードされています（クリックで読み込み）";
+        caption || "Image is offloaded (click to load)";
       captionEl.style.display = "";
       imgEl.addEventListener(
         "click",
@@ -2388,12 +2388,12 @@ function main(): void {
       return;
     }
 
-    captionEl.textContent = "画像を読み込み中…";
+    captionEl.textContent = "Loading image…";
     captionEl.style.display = "";
 
     const res = await requestImageData(imageKey);
     if (!res.ok) {
-      captionEl.textContent = `画像の読み込みに失敗: ${res.error}`;
+      captionEl.textContent = `Failed to load image: ${res.error}`;
       captionEl.style.display = "";
       return;
     }
@@ -4220,7 +4220,7 @@ function main(): void {
               sess.id !== active &&
               (state.approvals || []).length > 0
             ) {
-              showToast("info", "承認を選択して続行してください。");
+              showToast("info", "Select an approval decision to continue.");
               return;
             }
             vscode.postMessage({ type: "selectSession", sessionId: sess.id });
@@ -4685,7 +4685,7 @@ function main(): void {
             return c;
           })();
         void ensureImageRendered(block, img, captionEl).catch((err) => {
-          captionEl.textContent = `画像の描画に失敗: ${String(err)}`;
+          captionEl.textContent = `Failed to render image: ${String(err)}`;
           captionEl.style.display = "";
         });
         placeTopLevel(div);
@@ -4753,7 +4753,7 @@ function main(): void {
             })();
 
           void ensureImageRendered(imageRef, img, captionEl).catch((err) => {
-            captionEl.textContent = `画像の描画に失敗: ${String(err)}`;
+            captionEl.textContent = `Failed to render image: ${String(err)}`;
             captionEl.style.display = "";
           });
 
@@ -4852,7 +4852,7 @@ function main(): void {
             if (!canEdit) {
               showToast(
                 "info",
-                "Edit/Rewind は codez または opencode セッションのみ対応です。",
+                "Edit/Rewind is supported for codez/opencode sessions only.",
               );
               return;
             }
@@ -5495,7 +5495,7 @@ function main(): void {
     if (next !== null && !canEdit) {
       showToast(
         "info",
-        "Edit/Rewind は codez または opencode セッションのみ対応です。",
+        "Edit/Rewind is supported for codez/opencode sessions only.",
       );
       return;
     }
@@ -5536,7 +5536,7 @@ function main(): void {
     if (!trimmed && pendingImages.length === 0) return;
     if (pendingImages.length > 0) {
       if (!allowsImageInputs(state)) {
-        showToast("info", "選択中のモデルは画像入力に対応していません。");
+        showToast("info", "The selected model does not support image inputs.");
         return;
       }
       vscode.postMessage({
@@ -5701,9 +5701,9 @@ function main(): void {
     true,
   );
 
-  attachBtn.addEventListener("click", () => {
-    if (!allowsImageInputs(state)) {
-      showToast("info", "選択中のモデルは画像入力に対応していません。");
+    attachBtn.addEventListener("click", () => {
+      if (!allowsImageInputs(state)) {
+      showToast("info", "The selected model does not support image inputs.");
       return;
     }
     imageInput.click();
@@ -5741,7 +5741,7 @@ function main(): void {
       : (() => {
           const backendId = state.activeSession?.backendId ?? null;
           if (backendId !== "codez") {
-            showToast("info", "Reload は codez セッションのみ対応です。");
+            showToast("info", "Reload is supported for codez sessions only.");
             return;
           }
           vscode.postMessage({ type: "reloadSession" });
@@ -5788,7 +5788,7 @@ function main(): void {
       );
       if (imageItems.length === 0) return;
       if (!allowsImageInputs(state)) {
-        showToast("info", "選択中のモデルは画像入力に対応していません。");
+        showToast("info", "The selected model does not support image inputs.");
         return;
       }
       if (!state.activeSession) return;

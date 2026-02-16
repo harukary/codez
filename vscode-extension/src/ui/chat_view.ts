@@ -974,7 +974,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (sessionBackendId !== "opencode") {
             await respondOk({
               unsupported: true,
-              message: "このセッションは opencode ではありません。",
+              message: "This session is not an opencode session.",
             });
             return;
           }
@@ -987,7 +987,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (sessionBackendId !== "opencode") {
             await respondOk({
               unsupported: true,
-              message: "このセッションは opencode ではありません。",
+              message: "This session is not an opencode session.",
             });
             return;
           }
@@ -1017,7 +1017,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (sessionBackendId !== "opencode") {
             await respondOk({
               unsupported: true,
-              message: "このセッションは opencode ではありません。",
+              message: "This session is not an opencode session.",
             });
             return;
           }
@@ -1051,7 +1051,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (sessionBackendId !== "opencode") {
             await respondOk({
               unsupported: true,
-              message: "このセッションは opencode ではありません。",
+              message: "This session is not an opencode session.",
             });
             return;
           }
@@ -1078,7 +1078,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await respondOk({
               unsupported: true,
               message:
-                "アカウントの作成/切り替えは codez セッションのみ対応です。codez セッションを開くか、このスレッドを codez で開き直してください。",
+                "Account creation/switching is supported for codez sessions only. Open a codez session, or reopen this thread in codez.",
             });
             return;
           }

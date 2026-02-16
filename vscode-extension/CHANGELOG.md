@@ -4,7 +4,20 @@
 
 ## Unreleased
 
-_No changes._
+- **Sessions / Tree**
+  - backend（`codez (N)` 等）のグルーピング行を廃止し、各セッション行に `backendId` と `threadId` を同一行で表示
+- **Images**
+  - 画像キャッシュの prune が最新画像を先に削除して `ENOENT` になり得る問題を修正（古い画像から削除）
+- **Streaming**
+  - assistant のストリーミング delta と `item/completed` の到着順が前後した場合に、末尾が二重に表示され得る問題を修正
+- **Memory**
+  - `codez.ui.clearHistoryOnCompact` を追加。compact後にUI履歴をクリアしてメモリ使用量を抑え、必要なら `Load history` で再hydrationできるようにする
+  - compact後に残す往復数を `codez.ui.clearHistoryOnCompactKeepPairs` で指定（デフォルト 10）
+- **UI**
+  - UI上の日本語メッセージを英語へ統一（toasts / banners / blocks / quick pick 等）
+- **Errors**
+  - `turn` が `Failed` で完了した場合、エラーメッセージをチャット内のエラーカードとして表示（「何も起きない」ように見えるケースを低減）
+  - `error` 通知をチャット内のエラーカードとして表示
 
 ## 0.2.9
 
