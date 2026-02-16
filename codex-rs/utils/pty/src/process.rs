@@ -125,9 +125,10 @@ impl ProcessHandle {
             }
         }
         if let Ok(mut h) = self.wait_handle.lock() {
-            if let Some(handle) = h.take() {
-                handle.abort();
-            }
+            // Never abort the wait task: aborting it can prevent reaping the child
+            // process, leaving zombies behind. Dropping the JoinHandle detaches the
+            // task and lets it call wait() to completion.
+            let _ = h.take();
         }
     }
 }
