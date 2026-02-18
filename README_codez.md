@@ -244,6 +244,24 @@ hooks が発火しているかは `codex_core::hooks` の debug ログで追え�
 RUST_LOG=codex_core::hooks=debug codez exec --json '...'
 ```
 
+## codez ローカル開発向け: core テストのA/Bスキップ実行
+
+`codex-rs/core --test all` は upstream 追従で対象が増えており、codez で通常触らない機能群を外して開発ループを短縮できるようにした。
+
+- フル実行（基準）: `just test-core-all`
+- Aのみ除外: `just test-core-codez-fast-a`
+- A+B除外（最速）: `just test-core-codez-fast`
+
+対象カテゴリ:
+
+- A: websocket / rmcp / tool_harness / image / search / live 系
+- B: apply_patch_cli / shell_serialization / unified_exec / shell_snapshot / seatbelt / compact / prompt_caching / resume / review 系
+
+注意:
+
+- これは **ローカル反復用**。最終確認（PR前やリリース前）は `just test-core-all` で戻す。
+- `-- --nocapture` など追加引数はそのまま渡せる（例: `just test-core-codez-fast -- --nocapture`）。
+
 ## セッション履歴ナレッジ台帳（試作）
 
 一次情報をセッション履歴（`~/.codex/sessions/**/rollout-*.jsonl`）に限定して、「自分が過去にやったこと」を引き出して再利用する。
