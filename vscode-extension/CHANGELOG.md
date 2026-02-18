@@ -6,6 +6,12 @@
 
 - **Sessions / Tree**
   - backend（`codez (N)` 等）のグルーピング行を廃止し、各セッション行に `backendId` と `threadId` を同一行で表示
+- **Sessions / Chat Tabs**
+  - Reload 後など履歴未ロードのセッションで、CHAT タブをクリックしたときに履歴ロード（`Load history` 相当）を実行するよう改善
+- **Collaboration Mode**
+  - Windows での誤爆を避けるため、`Ctrl+Shift` によるモード切替を廃止し、入力欄での `Shift+Tab` 切替のみ対応に変更
+- **Performance**
+  - セッション選択時に `refreshCustomPromptsFromDisk` が二重実行される経路を解消し、再読み込み時の待ち時間を削減
 - **Images**
   - 画像キャッシュの prune が最新画像を先に削除して `ENOENT` になり得る問題を修正（古い画像から削除）
 - **Streaming**

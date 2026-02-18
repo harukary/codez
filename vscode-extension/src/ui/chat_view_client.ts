@@ -926,16 +926,9 @@ function main(): void {
     e: KeyboardEvent,
     scope: "global" | "input",
   ): boolean {
-    const isCtrlShiftOnly =
-      ((e.key === "Shift" && e.ctrlKey) ||
-        (e.key === "Control" && e.shiftKey)) &&
-      !e.altKey &&
-      !e.metaKey &&
-      !e.repeat;
     const isShiftTab =
       e.key === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
-    const wantsToggle =
-      scope === "global" ? isCtrlShiftOnly : isCtrlShiftOnly || isShiftTab;
+    const wantsToggle = scope === "input" && isShiftTab;
     if (!wantsToggle) return false;
     const sessionId = state.activeSession?.id ?? null;
     if (!sessionId) return false;

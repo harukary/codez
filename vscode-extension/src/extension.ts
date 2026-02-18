@@ -560,7 +560,6 @@ export function activate(context: vscode.ExtensionContext): void {
     saveSessions(context, sessions!);
     sessionTree?.refresh();
     setActiveSession(s.id);
-    refreshCustomPromptsFromDisk(s);
     void ensureModelsFetched(s);
     void showCodezViewContainer();
   };
@@ -995,7 +994,6 @@ export function activate(context: vscode.ExtensionContext): void {
       void ensureModelsFetched(session);
       hydrateRuntimeFromThread(session.id, res.thread);
       setActiveSession(session.id);
-      refreshCustomPromptsFromDisk(session);
     } catch (err) {
       output.appendLine(
         `[startup] Failed to restore last sessionId=${lastSessionId}: ${String(err)}`,
@@ -1522,7 +1520,6 @@ export function activate(context: vscode.ExtensionContext): void {
         void ensureModelsFetched(session);
         hydrateRuntimeFromThread(session.id, resumed.thread);
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk(session);
         await showCodezViewContainer();
         return;
       }
@@ -1601,7 +1598,6 @@ export function activate(context: vscode.ExtensionContext): void {
           void ensureModelsFetched(session);
           hydrateRuntimeFromThread(session.id, resumed.thread);
           setActiveSession(session.id);
-          refreshCustomPromptsFromDisk(session);
           await showCodezViewContainer();
         } catch (err) {
           output.appendLine(`[resume] Failed to reopen thread: ${String(err)}`);
@@ -2592,7 +2588,6 @@ export function activate(context: vscode.ExtensionContext): void {
         void ensureModelsFetched(session);
         hydrateRuntimeFromThread(session.id, res.thread);
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk(session);
         await showCodezViewContainer();
       },
     ),
@@ -2638,7 +2633,6 @@ export function activate(context: vscode.ExtensionContext): void {
         const rt = ensureRuntime(session.id);
         rt.uiHydrationBlockedText = null;
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk(session);
         await showCodezViewContainer();
       },
     ),
@@ -2716,20 +2710,20 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
-        // Session switching should be a pure UI operation.
-        // If history hasn't been loaded yet (e.g. after extension host reload), do NOT auto-resume:
-        // doing network calls on tab-click can interrupt or confuse in-progress turns.
+        // Switch tab first so unread/badge state updates immediately.
         setActiveSession(session.id, { markRead: false });
         await showCodezViewContainer();
 
         const rt = ensureRuntime(session.id);
         if (hasConversationBlocks(rt)) {
           rt.uiHydrationBlockedText = null;
-        } else {
-          rt.uiHydrationBlockedText =
-            "This session's history is not loaded in the UI yet.\nClick 'Load history', or open it from SESSIONS.";
+          setActiveSession(session.id);
+          return;
         }
-        setActiveSession(session.id);
+
+        await vscode.commands.executeCommand("codez._internal.loadHistoryForSession", {
+          sessionId: session.id,
+        });
       },
     ),
   );
@@ -3853,7 +3847,7 @@ async function handleSlashCommand(
 
     const picked = await vscode.window.showQuickPick(items, {
       title: "Collaboration mode",
-      placeHolder: "Pick a collaboration preset (Ctrl+Shift cycles).",
+      placeHolder: "Pick a collaboration preset (Shift+Tab cycles in input).",
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -4245,7 +4239,7 @@ async function handleSlashCommand(
         "- /status: Show status",
         "- /mcp: List MCP servers",
         "- /apps: Browse apps",
-        "- /collab: Change collaboration mode (Ctrl+Shift)",
+        "- /collab: Change collaboration mode (Shift+Tab in input)",
         "- /personality: Set personality",
         "- /debug-config: Show config details",
         "- /experimental: Toggle experimental features",
