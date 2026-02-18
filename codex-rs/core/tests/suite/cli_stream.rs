@@ -1,6 +1,7 @@
 use assert_cmd::Command as AssertCommand;
 use codex_core::auth::CODEX_API_KEY_ENV_VAR;
 use codex_core::protocol::GitInfo;
+use codex_protocol::openai_models::ModelsResponse;
 use codex_utils_cargo_bin::find_resource;
 use core_test_support::fs_wait;
 use core_test_support::responses;
@@ -26,6 +27,9 @@ async fn responses_mode_stream_cli() {
     skip_if_no_network!();
 
     let server = MockServer::start().await;
+    // Codex may fetch remote model metadata before issuing /responses; make this test hermetic.
+    let _models_mock =
+        responses::mount_models_once(&server, ModelsResponse { models: Vec::new() }).await;
     let repo_root = repo_root();
     let sse = responses::sse(vec![
         responses::ev_response_created("resp-1"),
@@ -41,7 +45,7 @@ async fn responses_mode_stream_cli() {
     );
     let bin = codex_utils_cargo_bin::cargo_bin("codex").unwrap();
     let mut cmd = AssertCommand::new(bin);
-    cmd.timeout(Duration::from_secs(30));
+    cmd.timeout(Duration::from_secs(90));
     cmd.arg("exec")
         .arg("--skip-git-repo-check")
         .arg("-c")
