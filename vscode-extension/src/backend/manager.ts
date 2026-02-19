@@ -63,6 +63,11 @@ import type { ListMcpServerStatusResponse } from "../generated/v2/ListMcpServerS
 import type { AskForApproval } from "../generated/v2/AskForApproval";
 import type { SandboxPolicy } from "../generated/v2/SandboxPolicy";
 import { promptRequestUserInput } from "./request_user_input";
+import { withInFlightReset } from "./opencode_inflight";
+import {
+  resolveBackendStartCommand,
+  resolveCliCommands,
+} from "./command_resolution";
 
 type ModelSettings = {
   model: string | null;
@@ -495,20 +500,18 @@ export class BackendManager implements vscode.Disposable {
       return;
     }
 
-    const codexCommand =
-      cfg.get<string>("cli.commands.codex") ??
-      cfg.get<string>("cli.commands.upstream") ??
-      "codex";
-    const codezCommand =
-      cfg.get<string>("cli.commands.codez") ??
-      cfg.get<string>("cli.commands.mine") ??
-      "codez";
+    const commands = resolveCliCommands({
+      codexCommand: cfg.get<string>("cli.commands.codex"),
+      codezCommand: cfg.get<string>("cli.commands.codez"),
+      upstreamCommand: cfg.get<string>("cli.commands.upstream"),
+      mineCommand: cfg.get<string>("cli.commands.mine"),
+    });
     const args = cfg.get<string[]>("backend.args");
     const logRpcPayloads = cfg.get<boolean>("debug.logRpcPayloads") ?? false;
 
     if (!args) throw new Error("Missing configuration: codez.backend.args");
 
-    const command = backendId === "codez" ? codezCommand : codexCommand;
+    const command = resolveBackendStartCommand(backendId, commands);
 
     const startPromise = (async () => {
       this.output.appendLine(
@@ -3373,7 +3376,7 @@ export class BackendManager implements vscode.Disposable {
     }
     if (this.opencodeServerInFlight) return await this.opencodeServerInFlight;
 
-    const start = (async () => {
+    const start = withInFlightReset((async () => {
       const proc = await OpencodeServerProcess.spawn({
         command: args.command,
         args: args.args,
@@ -3397,7 +3400,7 @@ export class BackendManager implements vscode.Disposable {
 
       this.opencodeServer = server;
       return server;
-    })().finally(() => {
+    })(), () => {
       this.opencodeServerInFlight = null;
     });
 

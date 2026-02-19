@@ -4,6 +4,8 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 
 import type { Session } from "../sessions";
+import { isCodexFamilyBackend } from "../session_backend";
+import { drainPendingRequestUserInput } from "./request_user_input_pending";
 
 export type ChatBlock =
   | { id: string; type: "user"; text: string }
@@ -543,10 +545,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.resolveViewReady?.();
     this.resolveViewReady = null;
     view.onDidDispose(() => {
-      for (const resolver of this.pendingRequestUserInput.values()) {
-        resolver({ cancelled: true, answersById: {} });
-      }
-      this.pendingRequestUserInput.clear();
+      drainPendingRequestUserInput(this.pendingRequestUserInput);
       this.view = null;
       this.statePostInFlight = false;
       this.statePostDirty = false;
@@ -985,10 +984,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (op === "reopenSessionInBackend") {
           const backendId = anyMsg["backendId"];
           const sessionId = anyMsg["sessionId"];
-          if (
-            typeof backendId !== "string" ||
-            (backendId !== "codex" && backendId !== "codez")
-          ) {
+          if (typeof backendId !== "string" || !isCodexFamilyBackend(backendId)) {
             await respondErr("Invalid backendId.");
             return;
           }
