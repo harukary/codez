@@ -647,7 +647,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const handleChatSend = async (
     text: string,
     images: UiImageInput[] = [],
-    rewind: { turnIndex: number } | null = null,
+    rewind: { turnId: string; turnIndex?: number } | null = null,
     opts?: { queueIfBusy?: boolean },
   ): Promise<void> => {
     if (!backendManager) throw new Error("backendManager is not initialized");
@@ -728,16 +728,19 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      const turnIdRaw = (rewind as any).turnId;
+      const turnId = typeof turnIdRaw === "string" ? turnIdRaw.trim() : "";
+      if (!turnId) {
+        void vscode.window.showErrorMessage("Invalid rewind request.");
+        return;
+      }
       const turnIndexRaw = (rewind as any).turnIndex;
       const turnIndex =
         typeof turnIndexRaw === "number" && Number.isFinite(turnIndexRaw)
           ? Math.trunc(turnIndexRaw)
-          : 0;
-
-      if (!turnIndex || turnIndex < 1) {
-        void vscode.window.showErrorMessage("Invalid rewind request.");
-        return;
-      }
+          : null;
+      const rewindLabel =
+        turnIndex && turnIndex >= 1 ? `turn #${turnIndex}` : `turnId=${turnId}`;
 
       if (rt.sending) {
         void vscode.window.showErrorMessage(
@@ -759,28 +762,13 @@ export function activate(context: vscode.ExtensionContext): void {
           id: rewindBlockId,
           type: "info",
           title: "Rewind requested",
-          text: `Rewinding to turn #${turnIndex}…`,
+          text: `Rewinding to ${rewindLabel}…`,
         });
         chatView?.refresh();
 
-        const resumed = await withTimeout(
-          "thread/resume",
-          bm.resumeSession(session),
-          REWIND_STEP_TIMEOUT_MS,
-        );
-        const totalTurns = Array.isArray(resumed.thread.turns)
-          ? resumed.thread.turns.length
-          : 0;
-        const numTurns = totalTurns - (turnIndex - 1);
-        if (!Number.isFinite(numTurns) || numTurns < 1) {
-          throw new Error(
-            `Invalid rewind request: turnIndex=${turnIndex} totalTurns=${totalTurns}`,
-          );
-        }
-
         const rolledBack = await withTimeout(
           "thread/rollback",
-          bm.threadRollback(session, { numTurns }),
+          bm.threadRollback(session, { turnId }),
           REWIND_STEP_TIMEOUT_MS,
         );
         hydrateRuntimeFromThread(session.id, rolledBack.thread, {
@@ -791,7 +779,7 @@ export function activate(context: vscode.ExtensionContext): void {
           id: rewindBlockId,
           type: "info",
           title: "Rewind completed",
-          text: `Rewound to turn #${turnIndex}.`,
+          text: `Rewound to ${rewindLabel}.`,
         });
         chatView?.refresh();
       };
@@ -801,7 +789,7 @@ export function activate(context: vscode.ExtensionContext): void {
       } catch (err) {
         const errText = formatUnknownError(err);
         outputChannel?.appendLine(
-          `[rewind] Failed: threadId=${session.threadId} turnIndex=${turnIndex} err=${errText}`,
+          `[rewind] Failed: threadId=${session.threadId} turnId=${turnId} err=${errText}`,
         );
         upsertBlock(session.id, {
           id: rewindBlockId,
@@ -8746,7 +8734,13 @@ function hydrateRuntimeFromThread(
           .filter((c) => c.type === "text")
           .map((c) => c.text)
           .join("\n");
-        if (text) upsertBlock(sessionId, { id: item.id, type: "user", text });
+        if (text)
+          upsertBlock(sessionId, {
+            id: item.id,
+            type: "user",
+            text,
+            turnId: turn.id,
+          });
       }
       if (item.type === "agentMessage") {
         if (item.text)

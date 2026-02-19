@@ -9,7 +9,7 @@ import { drainPendingRequestUserInput } from "./request_user_input_pending";
 import { shouldAutoReloadOnChatTabVisible } from "./chat_visibility";
 
 export type ChatBlock =
-  | { id: string; type: "user"; text: string }
+  | { id: string; type: "user"; text: string; turnId?: string }
   | {
       id: string;
       type: "assistant";
@@ -212,7 +212,8 @@ export type ChatViewState = {
 };
 
 type RewindRequest = {
-  turnIndex: number;
+  turnId: string;
+  turnIndex?: number;
 };
 
 const EMPTY_MODEL_STATE: {

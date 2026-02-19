@@ -2,17 +2,26 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "numTurns": {
-      "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.",
+      "description": "The number of turns to drop from the end of the thread. Must be >= 1.\n\nThis only modifies the thread's history and does not revert local file changes that have been made by the agent. Clients are responsible for reverting these changes.\n\nExactly one of `num_turns` or `turn_id` must be provided.",
       "format": "uint32",
       "minimum": 0.0,
-      "type": "integer"
+      "type": [
+        "integer",
+        "null"
+      ]
     },
     "threadId": {
       "type": "string"
+    },
+    "turnId": {
+      "description": "The turn id to rewind to (inclusive).\n\nWhen set, the server computes `num_turns` from current thread history and drops turns from the selected turn onward.\n\nExactly one of `num_turns` or `turn_id` must be provided.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
-    "numTurns",
     "threadId"
   ],
   "title": "ThreadRollbackParams",

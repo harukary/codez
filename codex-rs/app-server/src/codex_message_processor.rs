@@ -2421,18 +2421,96 @@ impl CodexMessageProcessor {
         let ThreadRollbackParams {
             thread_id,
             num_turns,
+            turn_id,
         } = params;
-
-        if num_turns == 0 {
-            self.send_invalid_request_error(request_id, "numTurns must be >= 1".to_string())
-                .await;
-            return;
-        }
 
         let (thread_id, thread) = match self.load_thread(&thread_id).await {
             Ok(v) => v,
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
+                return;
+            }
+        };
+
+        let num_turns = match (num_turns, turn_id.as_deref()) {
+            (Some(num_turns), None) => {
+                if num_turns == 0 {
+                    self.send_invalid_request_error(
+                        request_id,
+                        "numTurns must be >= 1".to_string(),
+                    )
+                    .await;
+                    return;
+                }
+                num_turns
+            }
+            (None, Some(turn_id)) => {
+                let rollout_path = match thread.rollout_path() {
+                    Some(path) => path,
+                    None => {
+                        self.send_invalid_request_error(
+                            request_id,
+                            "ephemeral threads do not support turnId rollback".to_string(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let turns = match read_rollout_items_from_rollout(rollout_path.as_path()).await {
+                    Ok(items) => build_turns_from_rollout_items(&items),
+                    Err(err) => {
+                        self.send_internal_error(
+                            request_id,
+                            format!(
+                                "failed to load rollout `{}` for thread {thread_id}: {err}",
+                                rollout_path.display()
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                if turns.is_empty() {
+                    self.send_invalid_request_error(request_id, "No turns to rewind.".to_string())
+                        .await;
+                    return;
+                }
+                let Some(target_index) = turns.iter().position(|turn| turn.id == turn_id) else {
+                    self.send_invalid_request_error(
+                        request_id,
+                        format!("turnId not found in thread history: {turn_id}"),
+                    )
+                    .await;
+                    return;
+                };
+                let num_turns_usize = turns.len().saturating_sub(target_index);
+                let Ok(num_turns_u32) = u32::try_from(num_turns_usize) else {
+                    self.send_internal_error(
+                        request_id,
+                        format!(
+                            "computed rollback span is too large: turns={} target_index={target_index}",
+                            turns.len()
+                        ),
+                    )
+                    .await;
+                    return;
+                };
+                num_turns_u32
+            }
+            (Some(_), Some(_)) => {
+                self.send_invalid_request_error(
+                    request_id,
+                    "Provide either numTurns or turnId, not both.".to_string(),
+                )
+                .await;
+                return;
+            }
+            (None, None) => {
+                self.send_invalid_request_error(
+                    request_id,
+                    "Missing rollback selector: provide numTurns or turnId.".to_string(),
+                )
+                .await;
                 return;
             }
         };

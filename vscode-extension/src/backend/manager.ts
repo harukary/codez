@@ -1724,7 +1724,7 @@ export class BackendManager implements vscode.Disposable {
 
   public async threadRollback(
     session: Session,
-    args: { numTurns: number },
+    args: { numTurns?: number; turnId?: string },
   ): Promise<ThreadRollbackResponse> {
     const folder = this.resolveWorkspaceFolder(session.workspaceFolderUri);
     if (!folder) {
@@ -1754,18 +1754,27 @@ export class BackendManager implements vscode.Disposable {
       if (turns.length === 0) {
         throw new Error("No turns to rewind.");
       }
-      const numTurns = Math.trunc(args.numTurns);
-      if (!Number.isFinite(numTurns) || numTurns < 1) {
-        throw new Error(`Invalid numTurns: ${String(args.numTurns)}`);
+      const hasNumTurns = typeof args.numTurns === "number";
+      const hasTurnId =
+        typeof args.turnId === "string" && args.turnId.trim().length > 0;
+      if (hasNumTurns === hasTurnId) {
+        throw new Error("Provide either numTurns or turnId for rollback.");
       }
-      if (numTurns > turns.length) {
-        throw new Error(
-          `Cannot rewind ${numTurns} turns (total=${turns.length}).`,
-        );
-      }
-      // Each opencode "turn" is based on a user message ID (turn.id is `turn:<messageId>`).
-      const targetTurn = turns[turns.length - numTurns]!;
-      const turnId = String(targetTurn.id ?? "");
+      const turnId = hasTurnId
+        ? String(args.turnId).trim()
+        : (() => {
+            const numTurns = Math.trunc(args.numTurns as number);
+            if (!Number.isFinite(numTurns) || numTurns < 1) {
+              throw new Error(`Invalid numTurns: ${String(args.numTurns)}`);
+            }
+            if (numTurns > turns.length) {
+              throw new Error(
+                `Cannot rewind ${numTurns} turns (total=${turns.length}).`,
+              );
+            }
+            const targetTurn = turns[turns.length - numTurns]!;
+            return String(targetTurn.id ?? "");
+          })();
       const m = turnId.match(/^turn:(.+)$/);
       if (!m) {
         throw new Error(`Unexpected opencode turn id: ${turnId}`);
@@ -1789,7 +1798,8 @@ export class BackendManager implements vscode.Disposable {
 
     return await proc.threadRollback({
       threadId: session.threadId,
-      numTurns: args.numTurns,
+      turnId: args.turnId ?? null,
+      numTurns: args.numTurns ?? null,
     });
   }
 

@@ -31,7 +31,7 @@ type ModelState = {
 };
 
 type ChatBlock =
-  | { id: string; type: "user"; text: string }
+  | { id: string; type: "user"; text: string; turnId?: string }
   | {
       id: string;
       type: "assistant";
@@ -1258,7 +1258,7 @@ function main(): void {
   };
 
   let domSessionId: string | null = null;
-  let rewindTurnIndex: number | null = null;
+  let rewindTarget: { turnId: string; turnIndex: number } | null = null;
   const blockElByKey = new Map<string, HTMLElement>();
   let tabsSig: string | null = null;
   let tabsSigPending: string | null = null;
@@ -3981,7 +3981,7 @@ function main(): void {
     settingsBtn.title = backendId
       ? `Settings (session backend: ${backendId})`
       : "Settings";
-    if (backendId !== "codez" && rewindTurnIndex !== null) setEditMode(null);
+    if (backendId !== "codez" && rewindTarget !== null) setEditMode(null);
     // Keep input enabled so the user can draft messages even before selecting a session,
     // Sending is still guarded by sendBtn.disabled and sendCurrentInput().
     inputEl.disabled = false;
@@ -4790,7 +4790,10 @@ function main(): void {
 
         if (block.type === "user") {
           const backendId = state.activeSession?.backendId ?? null;
-          const canEdit = backendId === "codez" || backendId === "opencode";
+          const turnId =
+            typeof block.turnId === "string" ? block.turnId.trim() : "";
+          const canEdit =
+            (backendId === "codez" || backendId === "opencode") && Boolean(turnId);
           userTurnIndex += 1;
           div.dataset.turnIndex = String(userTurnIndex);
 
@@ -4845,11 +4848,11 @@ function main(): void {
             if (!canEdit) {
               showToast(
                 "info",
-                "Edit/Rewind is supported for codez/opencode sessions only.",
+                "Edit/Rewind is available after thread history is loaded.",
               );
               return;
             }
-            setEditMode(userTurnIndex, block.text);
+            setEditMode({ turnId, turnIndex: userTurnIndex }, block.text);
             inputEl.focus();
           });
           actions.appendChild(editBtn);
@@ -5482,7 +5485,10 @@ function main(): void {
     }
   }
 
-  function setEditMode(next: number | null, presetText?: string): void {
+  function setEditMode(
+    next: { turnId: string; turnIndex: number } | null,
+    presetText?: string,
+  ): void {
     const backendId = state.activeSession?.backendId ?? null;
     const canEdit = backendId === "codez" || backendId === "opencode";
     if (next !== null && !canEdit) {
@@ -5492,7 +5498,7 @@ function main(): void {
       );
       return;
     }
-    rewindTurnIndex = next;
+    rewindTarget = next;
 
     if (typeof presetText === "string") {
       inputEl.value = presetText;
@@ -5501,7 +5507,7 @@ function main(): void {
       saveComposerState();
     }
 
-    if (rewindTurnIndex === null) {
+    if (rewindTarget === null) {
       editBannerEl.style.display = "none";
       editBannerEl.replaceChildren();
       return;
@@ -5510,7 +5516,7 @@ function main(): void {
     editBannerEl.replaceChildren();
     const text = document.createElement("div");
     text.className = "editBannerText";
-    text.textContent = `Editing turn #${rewindTurnIndex}. Sending will rewind and replace subsequent messages.`;
+    text.textContent = `Editing turn #${rewindTarget.turnIndex}. Sending will rewind and replace subsequent messages.`;
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
     cancel.addEventListener("click", () => setEditMode(null));
@@ -5543,10 +5549,7 @@ function main(): void {
         type: sendType,
         text,
         images: pendingImages.map((img) => ({ name: img.name, url: img.url })),
-        rewind:
-          canEdit && rewindTurnIndex !== null
-            ? { turnIndex: rewindTurnIndex }
-            : null,
+        rewind: canEdit && rewindTarget !== null ? rewindTarget : null,
       });
       pendingImages.splice(0, pendingImages.length);
       renderAttachments();
@@ -5554,10 +5557,7 @@ function main(): void {
       vscode.postMessage({
         type: sendType,
         text,
-        rewind:
-          canEdit && rewindTurnIndex !== null
-            ? { turnIndex: rewindTurnIndex }
-            : null,
+        rewind: canEdit && rewindTarget !== null ? rewindTarget : null,
       });
     }
 

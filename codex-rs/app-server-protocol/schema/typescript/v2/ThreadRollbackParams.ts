@@ -4,9 +4,20 @@
 
 export type ThreadRollbackParams = { threadId: string, 
 /**
+ * The turn id to rewind to (inclusive).
+ *
+ * When set, the server computes `num_turns` from current thread history and
+ * drops turns from the selected turn onward.
+ *
+ * Exactly one of `num_turns` or `turn_id` must be provided.
+ */
+turnId?: string | null, 
+/**
  * The number of turns to drop from the end of the thread. Must be >= 1.
  *
  * This only modifies the thread's history and does not revert local file changes
  * that have been made by the agent. Clients are responsible for reverting these changes.
+ *
+ * Exactly one of `num_turns` or `turn_id` must be provided.
  */
-numTurns: number, };
+numTurns?: number | null, };
