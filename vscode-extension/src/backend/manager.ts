@@ -68,6 +68,7 @@ import {
   resolveBackendStartCommand,
   resolveCliCommands,
 } from "./command_resolution";
+import { buildOpencodeServeArgs } from "./opencode_command";
 
 type ModelSettings = {
   model: string | null;
@@ -331,10 +332,7 @@ export class BackendManager implements vscode.Disposable {
     const cfg = vscode.workspace.getConfiguration("codez", folder.uri);
     if (backendId === "opencode") {
       const command = cfg.get<string>("opencode.command") ?? "opencode";
-      const rawArgs = cfg.get<string[]>("opencode.args") ?? ["serve"];
-      const args = [...rawArgs];
-      if (!args.includes("--hostname")) args.push("--hostname", "127.0.0.1");
-      if (!args.includes("--port")) args.push("--port", "0");
+      const args = buildOpencodeServeArgs(cfg.get<string[]>("opencode.args"));
 
       const startPromise = (async () => {
         this.output.appendLine(

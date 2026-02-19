@@ -6,6 +6,7 @@ import * as vscode from "vscode";
 import type { Session } from "../sessions";
 import { isCodexFamilyBackend } from "../session_backend";
 import { drainPendingRequestUserInput } from "./request_user_input_pending";
+import { shouldAutoReloadOnChatTabVisible } from "./chat_visibility";
 
 export type ChatBlock =
   | { id: string; type: "user"; text: string }
@@ -304,6 +305,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       answersById: Record<string, string[]>;
     }) => void
   >();
+  private autoReloadOnVisibleInFlight = false;
 
   public insertIntoInput(text: string): void {
     this.view?.webview.postMessage({ type: "insertText", text });
@@ -540,7 +542,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
     });
     view.onDidChangeVisibility(() => {
-      if (view.visible) this.refresh();
+      if (!view.visible) return;
+      this.refresh();
+      if (this.autoReloadOnVisibleInFlight) return;
+      if (!shouldAutoReloadOnChatTabVisible(this.getState())) return;
+      this.autoReloadOnVisibleInFlight = true;
+      void vscode.commands
+        .executeCommand("codez.reloadSession")
+        .then(
+          () => {
+            this.autoReloadOnVisibleInFlight = false;
+          },
+          (err: unknown) => {
+            this.autoReloadOnVisibleInFlight = false;
+            this.onUiError(`Auto reload failed: ${String(err)}`);
+          },
+        );
     });
     this.resolveViewReady?.();
     this.resolveViewReady = null;

@@ -38,6 +38,12 @@ import {
   parseBackendInstanceKey,
 } from "./backend/backend_instance_key";
 import {
+  evaluateReloadSessionGuard,
+  evaluateReopenSessionAction,
+  parseReopenCommandArgs,
+  RELOAD_UNSUPPORTED_MESSAGE,
+} from "./commands/session_actions";
+import {
   ChatViewProvider,
   getSessionModelState,
   hasSessionModelState,
@@ -1575,39 +1581,29 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!sessions) throw new Error("sessions is not initialized");
         if (!extensionContext) throw new Error("extensionContext is not set");
 
-        if (typeof args !== "object" || args === null) return;
-        const anyArgs = args as Record<string, unknown>;
-        const sessionId = anyArgs["sessionId"];
-        const backendId = anyArgs["backendId"];
-        if (typeof sessionId !== "string" || !sessionId) return;
-        if (
-          backendId !== "codex" &&
-          backendId !== "codez" &&
-          backendId !== "opencode"
-        )
-          return;
+        const parsed = parseReopenCommandArgs(args);
+        if (!parsed) return;
+        const { sessionId, backendId } = parsed;
 
         const src = sessions.getById(sessionId);
         if (!src) return;
-
-        if (
-          src.backendId === "opencode" ||
-          backendId === "opencode" ||
-          (src.backendId !== "codex" && src.backendId !== "codez") ||
-          (backendId !== "codex" && backendId !== "codez")
-        ) {
-          void vscode.window.showErrorMessage(
-            "This thread is not compatible with opencode history, so it cannot be reopened across codex/codez <-> opencode.",
-          );
-          return;
-        }
 
         const backendKey = makeBackendInstanceKey(
           src.workspaceFolderUri,
           backendId,
         );
         const existing = sessions.getByThreadId(backendKey, src.threadId);
-        if (existing) {
+        const reopenAction = evaluateReopenSessionAction({
+          sourceBackendId: src.backendId,
+          targetBackendId: backendId,
+          existingSessionId: existing?.id ?? null,
+        });
+        if (!reopenAction.ok) {
+          void vscode.window.showErrorMessage(reopenAction.message);
+          return;
+        }
+
+        if (reopenAction.action === "reuseExisting" && existing) {
           setActiveSession(existing.id);
           await showCodezViewContainer();
           return;
@@ -1713,29 +1709,29 @@ export function activate(context: vscode.ExtensionContext): void {
         : null;
       if (!session) return;
 
-      if (session.backendId !== "codez") {
-        void vscode.window.showInformationMessage(
-          "Reload is supported for codez sessions only.",
-        );
-        chatView?.toast("info", "Reload is supported for codez sessions only.");
-        return;
-      }
-
       const folder = resolveWorkspaceFolderForSession(session);
-      if (!folder) {
-        void vscode.window.showErrorMessage(
-          "WorkspaceFolder not found for session.",
-        );
-        return;
-      }
       const rt = ensureRuntime(session.id);
-      if (rt.sending) {
-        void vscode.window.showErrorMessage(
-          "Cannot reload while a turn is in progress.",
-        );
+      const guard = evaluateReloadSessionGuard({
+        backendId: session.backendId,
+        hasWorkspaceFolder: Boolean(folder),
+        sending: rt.sending,
+        reloading: rt.reloading,
+      });
+      if (!guard.ok) {
+        if (guard.kind === "info" && guard.message) {
+          void vscode.window.showInformationMessage(guard.message);
+          if (guard.message === RELOAD_UNSUPPORTED_MESSAGE) {
+            chatView?.toast("info", guard.message);
+          }
+        }
+        if (guard.kind === "error" && guard.message) {
+          void vscode.window.showErrorMessage(guard.message);
+        }
         return;
       }
-      if (rt.reloading) return;
+      if (!folder) {
+        throw new Error("reload guard passed unexpectedly without folder");
+      }
       rt.reloading = true;
       rt.uiHydrationBlockedText = null;
       chatView?.refresh();
