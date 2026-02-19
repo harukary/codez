@@ -22,6 +22,8 @@ macOS/Linux 向けに GitHub Releases に prebuilt バイナリ（`codex-<target
   - `curl -fsSL https://raw.githubusercontent.com/harukary/codez/main/install.sh | sh`
 - バージョン指定（タグ）:
   - `CODEZ_VERSION=codez-vX.Y.Z-codez.N sh install.sh`
+- 検証失敗時に強制続行（非推奨）:
+  - `CODEZ_ALLOW_UNVERIFIED=1 sh install.sh`
 
 インストール先はデフォルトで次になる:
 
@@ -29,6 +31,8 @@ macOS/Linux 向けに GitHub Releases に prebuilt バイナリ（`codex-<target
 - ラッパー: `~/.local/bin/codez`
 
 ラッパーは `--config check_for_update_on_startup=false` を常に付けて起動する（本家 `codex` の挙動に寄せる）。
+
+`install.sh` はチェックサム検証を既定で必須化している。`checksums.txt` の取得失敗・エントリ欠落・ハッシュコマンド未導入時は中断する。どうしても継続が必要な場合のみ `CODEZ_ALLOW_UNVERIFIED=1` を指定する。
 
 NOTE: `~/.local/bin` が `PATH` に入っていない環境では `codez` が見つからないので、`~/.zshrc` 等に `export PATH="$HOME/.local/bin:$PATH"` を追加するか、`CODEZ_BIN_DIR` で `PATH` 上のディレクトリを指定する。
 

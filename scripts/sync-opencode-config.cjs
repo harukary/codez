@@ -195,9 +195,8 @@ function codexMcpServerToOpencode(name, cfg) {
 }
 
 function renderOpencodeConfig({ mcp, sourcePath, entryWarnings }) {
-  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const topComments = [
-    `Generated from ${sourcePath} at ${now}`,
+    `Generated from ${sourcePath}`,
     "NOTE: JSONC（コメント付き JSON）として生成します（.json にコメントが含まれます）。",
   ];
 
@@ -358,4 +357,3 @@ function main(argv) {
 }
 
 process.exitCode = main(process.argv.slice(2));
-

@@ -2706,16 +2706,48 @@ impl CodexMessageProcessor {
 
         let mut thread = if let Some(summary) = db_summary {
             summary_to_thread(summary)
-        } else if let Some(rollout_path) = rollout_path.as_ref() {
+        } else if let Some(rollout_path_ref) = rollout_path.as_ref() {
             let fallback_provider = self.config.model_provider_id.as_str();
-            match read_summary_from_rollout(rollout_path, fallback_provider).await {
+            match read_summary_from_rollout(rollout_path_ref, fallback_provider).await {
                 Ok(summary) => summary_to_thread(summary),
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::NotFound
+                        || (err.kind() == std::io::ErrorKind::InvalidData
+                            && err.to_string().contains("empty session file")) =>
+                {
+                    let Ok(thread) = self.thread_manager.get_thread(thread_uuid).await else {
+                        self.send_internal_error(
+                            request_id,
+                            format!(
+                                "failed to load rollout `{}` for thread {thread_uuid}: {err}",
+                                rollout_path_ref.display()
+                            ),
+                        )
+                        .await;
+                        return;
+                    };
+                    let config_snapshot = thread.config_snapshot().await;
+                    let loaded_rollout_path = thread.rollout_path();
+                    if include_turns && loaded_rollout_path.is_none() {
+                        self.send_invalid_request_error(
+                            request_id,
+                            "ephemeral threads do not support includeTurns".to_string(),
+                        )
+                        .await;
+                        return;
+                    }
+                    if include_turns {
+                        rollout_path = loaded_rollout_path.clone();
+                    }
+                    build_thread_from_snapshot(thread_uuid, &config_snapshot, loaded_rollout_path)
+                        .await
+                }
                 Err(err) => {
                     self.send_internal_error(
                         request_id,
                         format!(
                             "failed to load rollout `{}` for thread {thread_uuid}: {err}",
-                            rollout_path.display()
+                            rollout_path_ref.display()
                         ),
                     )
                     .await;

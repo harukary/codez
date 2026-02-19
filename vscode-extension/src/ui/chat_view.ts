@@ -372,6 +372,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       images?: Array<{ name: string; url: string }>,
       rewind?: RewindRequest | null,
     ) => Promise<void>,
+    private readonly onQueueSend: (
+      text: string,
+      images?: Array<{ name: string; url: string }>,
+      rewind?: RewindRequest | null,
+    ) => Promise<void>,
     private readonly onOpencodePermissionReply: (
       session: Session,
       args: { requestID: string; reply: "once" | "always" | "reject" },
@@ -538,6 +543,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.resolveViewReady?.();
     this.resolveViewReady = null;
     view.onDidDispose(() => {
+      for (const resolver of this.pendingRequestUserInput.values()) {
+        resolver({ cancelled: true, answersById: {} });
+      }
+      this.pendingRequestUserInput.clear();
       this.view = null;
       this.statePostInFlight = false;
       this.statePostDirty = false;
@@ -649,6 +658,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           url: (img as any).url as string,
         }));
       await this.onSend(text, normalized, (rewind as any) ?? null);
+      return;
+    }
+
+    if (type === "queueSend") {
+      const text = anyMsg["text"];
+      const rewind = anyMsg["rewind"];
+      if (typeof text !== "string") return;
+      await this.onQueueSend(text, [], (rewind as any) ?? null);
+      return;
+    }
+
+    if (type === "queueSendWithImages") {
+      const text = anyMsg["text"];
+      const images = anyMsg["images"];
+      const rewind = anyMsg["rewind"];
+      if (typeof text !== "string") return;
+      if (!Array.isArray(images)) return;
+      const normalized = images
+        .filter(
+          (img) =>
+            typeof img === "object" &&
+            img !== null &&
+            typeof (img as any).url === "string",
+        )
+        .map((img) => ({
+          name: typeof (img as any).name === "string" ? (img as any).name : "",
+          url: (img as any).url as string,
+        }));
+      await this.onQueueSend(text, normalized, (rewind as any) ?? null);
       return;
     }
 

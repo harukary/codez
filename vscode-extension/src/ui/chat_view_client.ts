@@ -5519,21 +5519,28 @@ function main(): void {
     editBannerEl.style.display = "";
   }
 
-  function sendCurrentInput(): void {
+  function dispatchCurrentInput(mode: "send" | "queue"): void {
     if (!state.activeSession) return;
-    if (state.sending) return;
     const backendId = state.activeSession.backendId;
     const canEdit = backendId === "codez" || backendId === "opencode";
     const text = inputEl.value;
     const trimmed = text.trim();
     if (!trimmed && pendingImages.length === 0) return;
+    const sendType =
+      mode === "queue"
+        ? pendingImages.length > 0
+          ? "queueSendWithImages"
+          : "queueSend"
+        : pendingImages.length > 0
+          ? "sendWithImages"
+          : "send";
     if (pendingImages.length > 0) {
       if (!allowsImageInputs(state)) {
         showToast("info", "The selected model does not support image inputs.");
         return;
       }
       vscode.postMessage({
-        type: "sendWithImages",
+        type: sendType,
         text,
         images: pendingImages.map((img) => ({ name: img.name, url: img.url })),
         rewind:
@@ -5545,7 +5552,7 @@ function main(): void {
       renderAttachments();
     } else {
       vscode.postMessage({
-        type: "send",
+        type: sendType,
         text,
         rewind:
           canEdit && rewindTurnIndex !== null
@@ -5567,6 +5574,14 @@ function main(): void {
     updateSuggestions();
     saveComposerState();
     setEditMode(null);
+  }
+
+  function sendCurrentInput(): void {
+    dispatchCurrentInput("send");
+  }
+
+  function queueCurrentInput(): void {
+    dispatchCurrentInput("queue");
   }
 
   function allowsImageInputs(s: ChatViewState): boolean {
@@ -5827,6 +5842,18 @@ function main(): void {
   inputEl.addEventListener("keydown", (e) => {
     if (handleCollaborationModeToggleShortcut(e as KeyboardEvent, "input"))
       return;
+    if (
+      (e as KeyboardEvent).key === "Tab" &&
+      !(e as KeyboardEvent).shiftKey &&
+      !(e as KeyboardEvent).altKey &&
+      !(e as KeyboardEvent).metaKey &&
+      !(e as KeyboardEvent).ctrlKey &&
+      state.sending
+    ) {
+      e.preventDefault();
+      queueCurrentInput();
+      return;
+    }
     if (
       (e as KeyboardEvent).key === "Enter" &&
       !(e as KeyboardEvent).shiftKey

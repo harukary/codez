@@ -424,6 +424,11 @@ let tabOrder: TabOrderState = {
 const mcpStatusByBackendKey = new Map<string, Map<string, string>>();
 const defaultTitleRe = /^(.*)\s+\([0-9a-f]{8}\)$/i;
 type UiImageInput = { name: string; url: string };
+type QueuedUserInput = {
+  text: string;
+  images: UiImageInput[];
+  modelState: ModelState | null;
+};
 type BackendImageInput =
   | { kind: "imageUrl"; url: string }
   | { kind: "localImage"; path: string };
@@ -478,6 +483,8 @@ type SessionRuntime = {
     (decision: "accept" | "acceptForSession" | "decline" | "cancel") => void
   >;
   pendingAppMentions: Array<{ name: string; path: string }>;
+  pendingUserInputQueue: QueuedUserInput[];
+  flushingQueuedUserInput: boolean;
   actionCards: Map<string, ActionCardState>;
 };
 
@@ -631,158 +638,191 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  chatView = new ChatViewProvider(
-    context,
-    () => buildChatState(),
-    async (text, images = [], rewind = null) => {
-      if (!backendManager) throw new Error("backendManager is not initialized");
-      if (!sessions) throw new Error("sessions is not initialized");
-      const bm = backendManager;
+  const handleChatSend = async (
+    text: string,
+    images: UiImageInput[] = [],
+    rewind: { turnIndex: number } | null = null,
+    opts?: { queueIfBusy?: boolean },
+  ): Promise<void> => {
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    if (!sessions) throw new Error("sessions is not initialized");
+    const bm = backendManager;
 
-      const session = activeSessionId
-        ? sessions.getById(activeSessionId)
-        : null;
-      if (!session) {
-        void vscode.window.showErrorMessage("No session selected.");
-        return;
-      }
+    const session = activeSessionId ? sessions.getById(activeSessionId) : null;
+    if (!session) {
+      void vscode.window.showErrorMessage("No session selected.");
+      return;
+    }
 
-      const trimmed = text.trim();
-      if (rewind && trimmed.startsWith("/")) {
+    const trimmed = text.trim();
+    if (rewind && trimmed.startsWith("/")) {
+      void vscode.window.showErrorMessage(
+        "Rewind is not supported for slash commands.",
+      );
+      return;
+    }
+    if (trimmed.startsWith("/") && images.length > 0) {
+      void vscode.window.showErrorMessage(
+        "Slash commands do not support images yet.",
+      );
+      return;
+    }
+
+    const rt = ensureRuntime(session.id);
+    if (opts?.queueIfBusy && rt.sending) {
+      if (!trimmed && images.length === 0) return;
+      if (rewind) {
         void vscode.window.showErrorMessage(
-          "Rewind is not supported for slash commands.",
-        );
-        return;
-      }
-      if (trimmed.startsWith("/") && images.length > 0) {
-        void vscode.window.showErrorMessage(
-          "Slash commands do not support images yet.",
+          "Rewind is not supported for queued input.",
         );
         return;
       }
       if (trimmed.startsWith("/")) {
-        const slashHandled = await handleSlashCommand(context, session, text);
-        if (slashHandled) return;
+        void vscode.window.showErrorMessage(
+          "Slash commands cannot be queued while a turn is in progress.",
+        );
+        return;
       }
+      rt.pendingUserInputQueue.push({
+        text,
+        images,
+        modelState: getSessionModelState(session.id),
+      });
+      chatView?.toast(
+        "info",
+        `Queued message (${rt.pendingUserInputQueue.length})`,
+      );
+      chatView?.refresh();
+      return;
+    }
 
-      const expanded = await expandMentions(session, text);
-      if (!expanded.ok) {
-        void vscode.window.showErrorMessage(expanded.error);
+    if (trimmed.startsWith("/")) {
+      const slashHandled = await handleSlashCommand(context, session, text);
+      if (slashHandled) return;
+    }
+
+    const expanded = await expandMentions(session, text);
+    if (!expanded.ok) {
+      void vscode.window.showErrorMessage(expanded.error);
+      return;
+    }
+
+    if (rewind) {
+      const folder = resolveWorkspaceFolderForSession(session);
+      if (!folder) {
+        void vscode.window.showErrorMessage(
+          "WorkspaceFolder not found for session.",
+        );
+        return;
+      }
+      if (session.backendId !== "codez" && session.backendId !== "opencode") {
+        void vscode.window.showInformationMessage(
+          "Rewind is supported for codez/opencode sessions only.",
+        );
         return;
       }
 
-      if (rewind) {
-        const folder = resolveWorkspaceFolderForSession(session);
-        if (!folder) {
-          void vscode.window.showErrorMessage(
-            "WorkspaceFolder not found for session.",
-          );
-          return;
-        }
-        if (session.backendId !== "codez" && session.backendId !== "opencode") {
-          void vscode.window.showInformationMessage(
-            "Rewind is supported for codez/opencode sessions only.",
-          );
-          return;
-        }
+      const turnIndexRaw = (rewind as any).turnIndex;
+      const turnIndex =
+        typeof turnIndexRaw === "number" && Number.isFinite(turnIndexRaw)
+          ? Math.trunc(turnIndexRaw)
+          : 0;
 
-        const turnIndexRaw = (rewind as any).turnIndex;
-        const turnIndex =
-          typeof turnIndexRaw === "number" && Number.isFinite(turnIndexRaw)
-            ? Math.trunc(turnIndexRaw)
-            : 0;
-
-        if (!turnIndex || turnIndex < 1) {
-          void vscode.window.showErrorMessage("Invalid rewind request.");
-          return;
-        }
-
-        const rt = ensureRuntime(session.id);
-        if (rt.sending) {
-          void vscode.window.showErrorMessage(
-            "Cannot rewind while a turn is in progress.",
-          );
-          return;
-        }
-        if (
-          session.backendId === "opencode" &&
-          bm.isOpencodeSessionBusy(session)
-        ) {
-          void vscode.window.showErrorMessage(
-            "Cannot rewind because the OpenCode session is busy. Stop it and try again.",
-          );
-          return;
-        }
-
-        const rewindBlockId = newLocalId("info");
-
-        const runRewind = async (): Promise<void> => {
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "info",
-            title: "Rewind requested",
-            text: `Rewinding to turn #${turnIndex}…`,
-          });
-          chatView?.refresh();
-
-          const resumed = await withTimeout(
-            "thread/resume",
-            bm.resumeSession(session),
-            REWIND_STEP_TIMEOUT_MS,
-          );
-          const totalTurns = Array.isArray(resumed.thread.turns)
-            ? resumed.thread.turns.length
-            : 0;
-          const numTurns = totalTurns - (turnIndex - 1);
-          if (!Number.isFinite(numTurns) || numTurns < 1) {
-            throw new Error(
-              `Invalid rewind request: turnIndex=${turnIndex} totalTurns=${totalTurns}`,
-            );
-          }
-
-          const rolledBack = await withTimeout(
-            "thread/rollback",
-            bm.threadRollback(session, { numTurns }),
-            REWIND_STEP_TIMEOUT_MS,
-          );
-          hydrateRuntimeFromThread(session.id, rolledBack.thread, {
-            force: true,
-          });
-
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "info",
-            title: "Rewind completed",
-            text: `Rewound to turn #${turnIndex}.`,
-          });
-          chatView?.refresh();
-        };
-
-        try {
-          await runRewind();
-        } catch (err) {
-          const errText = formatUnknownError(err);
-          outputChannel?.appendLine(
-            `[rewind] Failed: threadId=${session.threadId} turnIndex=${turnIndex} err=${errText}`,
-          );
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "error",
-            title: "Rewind failed",
-            text: `${errText}\n\nCheck 'Codex UI' output channel for backend logs.`,
-          });
-          chatView?.refresh();
-          return;
-        }
+      if (!turnIndex || turnIndex < 1) {
+        void vscode.window.showErrorMessage("Invalid rewind request.");
+        return;
       }
 
-      await sendUserInput(
-        session,
-        expanded.text,
-        images,
-        getSessionModelState(session.id),
-      );
-    },
+      if (rt.sending) {
+        void vscode.window.showErrorMessage(
+          "Cannot rewind while a turn is in progress.",
+        );
+        return;
+      }
+      if (session.backendId === "opencode" && bm.isOpencodeSessionBusy(session)) {
+        void vscode.window.showErrorMessage(
+          "Cannot rewind because the OpenCode session is busy. Stop it and try again.",
+        );
+        return;
+      }
+
+      const rewindBlockId = newLocalId("info");
+
+      const runRewind = async (): Promise<void> => {
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "info",
+          title: "Rewind requested",
+          text: `Rewinding to turn #${turnIndex}…`,
+        });
+        chatView?.refresh();
+
+        const resumed = await withTimeout(
+          "thread/resume",
+          bm.resumeSession(session),
+          REWIND_STEP_TIMEOUT_MS,
+        );
+        const totalTurns = Array.isArray(resumed.thread.turns)
+          ? resumed.thread.turns.length
+          : 0;
+        const numTurns = totalTurns - (turnIndex - 1);
+        if (!Number.isFinite(numTurns) || numTurns < 1) {
+          throw new Error(
+            `Invalid rewind request: turnIndex=${turnIndex} totalTurns=${totalTurns}`,
+          );
+        }
+
+        const rolledBack = await withTimeout(
+          "thread/rollback",
+          bm.threadRollback(session, { numTurns }),
+          REWIND_STEP_TIMEOUT_MS,
+        );
+        hydrateRuntimeFromThread(session.id, rolledBack.thread, {
+          force: true,
+        });
+
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "info",
+          title: "Rewind completed",
+          text: `Rewound to turn #${turnIndex}.`,
+        });
+        chatView?.refresh();
+      };
+
+      try {
+        await runRewind();
+      } catch (err) {
+        const errText = formatUnknownError(err);
+        outputChannel?.appendLine(
+          `[rewind] Failed: threadId=${session.threadId} turnIndex=${turnIndex} err=${errText}`,
+        );
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "error",
+          title: "Rewind failed",
+          text: `${errText}\n\nCheck 'Codex UI' output channel for backend logs.`,
+        });
+        chatView?.refresh();
+        return;
+      }
+    }
+
+    await sendUserInput(
+      session,
+      expanded.text,
+      images,
+      getSessionModelState(session.id),
+    );
+  };
+
+  chatView = new ChatViewProvider(
+    context,
+    () => buildChatState(),
+    async (text, images = [], rewind = null) =>
+      await handleChatSend(text, images, rewind, { queueIfBusy: false }),
+    async (text, images = [], rewind = null) =>
+      await handleChatSend(text, images, rewind, { queueIfBusy: true }),
     async (session, args) => {
       if (!backendManager) throw new Error("backendManager is not initialized");
       const requestID = String(args.requestID ?? "").trim();
@@ -3352,6 +3392,32 @@ async function sendUserInput(
   schedulePersistRuntime(session.id);
 }
 
+async function flushQueuedUserInput(sessionId: string): Promise<void> {
+  if (!sessions) return;
+  const rt = ensureRuntime(sessionId);
+  if (rt.flushingQueuedUserInput) return;
+  if (rt.sending) return;
+  if (rt.pendingUserInputQueue.length === 0) return;
+
+  const session = sessions.getById(sessionId);
+  if (!session) {
+    rt.pendingUserInputQueue.length = 0;
+    chatView?.refresh();
+    return;
+  }
+
+  rt.flushingQueuedUserInput = true;
+  try {
+    if (rt.sending) return;
+    const next = rt.pendingUserInputQueue.shift();
+    if (!next) return;
+    await sendUserInput(session, next.text, next.images, next.modelState);
+  } finally {
+    rt.flushingQueuedUserInput = false;
+    chatView?.refresh();
+  }
+}
+
 function registerActionCard(
   sessionId: string,
   cardId: string,
@@ -5634,6 +5700,8 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     pendingApprovals: new Map(),
     approvalResolvers: new Map(),
     pendingAppMentions: [],
+    pendingUserInputQueue: [],
+    flushingQueuedUserInput: false,
     actionCards: new Map(),
   };
   runtimeBySessionId.set(sessionId, rt);
@@ -6078,6 +6146,7 @@ function applyServerNotification(
         }
       }
       chatView?.refresh();
+      void flushQueuedUserInput(sessionId);
       return;
     case "thread/tokenUsage/updated":
       rt.tokenUsage = (n as any).params.tokenUsage as ThreadTokenUsage;

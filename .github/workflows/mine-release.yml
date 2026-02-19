@@ -1,6 +1,11 @@
 name: mine-release
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (example: codez-v0.101.0-codez.0)"
+        required: true
+        type: string
   push:
     tags:
       - "mine-v*"
@@ -203,6 +208,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
           files: |
             dist/codex-*.tar.gz
             dist/checksums.txt

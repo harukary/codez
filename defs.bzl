@@ -4,7 +4,7 @@ load("@rules_platform//platform_data:defs.bzl", "platform_data")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_proc_macro", "rust_test")
 load("@rules_rust//cargo/private:cargo_build_script_wrapper.bzl", "cargo_build_script")
 
-CODEX_CARGO_PKG_VERSION = "0.98.0-codez.4"
+CODEX_CARGO_PKG_VERSION = "0.101.0-codez.0"
 
 PLATFORMS = [
     "linux_arm64_musl",
