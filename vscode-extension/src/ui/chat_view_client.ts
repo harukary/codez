@@ -3981,7 +3981,7 @@ function main(): void {
     settingsBtn.title = backendId
       ? `Settings (session backend: ${backendId})`
       : "Settings";
-    if (backendId !== "codez" && rewindTarget !== null) setEditMode(null);
+    if (backendId !== "codez" && backendId !== "opencode" && rewindTarget !== null) setEditMode(null);
     // Keep input enabled so the user can draft messages even before selecting a session,
     // Sending is still guarded by sendBtn.disabled and sendCurrentInput().
     inputEl.disabled = false;

@@ -8,6 +8,9 @@
   - backend（`codez (N)` 等）のグルーピング行を廃止し、各セッション行に `backendId` と `threadId` を同一行で表示
 - **Sessions / Chat Tabs**
   - Reload 後など履歴未ロードのセッションで、CHAT タブをクリックしたときに履歴ロード（`Load history` 相当）を実行するよう改善
+  - 既存セッションに `turnId` なしの user ブロックが残っている場合、`codez/opencode` では履歴再hydrationを強制して Rewind/Edit を復旧
+  - `thread/resume` は毎回実行せず、履歴が既にロード済みのときはスキップ（上記の復旧条件のみ例外）
+  - セッション切替時の `reloadSession` で、他セッションが実行中なら reload を拒否して進行中ストリームへの干渉を回避
 - **Collaboration Mode**
   - Windows での誤爆を避けるため、`Ctrl+Shift` によるモード切替を廃止し、入力欄での `Shift+Tab` 切替のみ対応に変更
 - **Steer Mode**
@@ -26,6 +29,7 @@
 - **Errors**
   - `turn` が `Failed` で完了した場合、エラーメッセージをチャット内のエラーカードとして表示（「何も起きない」ように見えるケースを低減）
   - `error` 通知をチャット内のエラーカードとして表示
+  - `turn/started` 到着時に送信済み user ブロックへ `turnId` を後付けし、送信直後の Edit/Rewrite 判定が不安定になる回帰を修正
 - **OpenCode / Stability**
   - opencode サーバー起動失敗時に `inFlight` 状態が残って再試行不能になる問題を修正（失敗後に再起動できるように）
   - `request_user_input` 待機中に Webview が破棄された場合、待機を `cancelled` で解放してターンが停止し続ける問題を修正

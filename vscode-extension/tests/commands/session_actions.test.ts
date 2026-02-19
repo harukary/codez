@@ -7,6 +7,7 @@ import {
   parseReopenCommandArgs,
   REOPEN_INCOMPATIBLE_MESSAGE,
   RELOAD_SENDING_MESSAGE,
+  RELOAD_OTHER_SESSION_RUNNING_MESSAGE,
   RELOAD_UNSUPPORTED_MESSAGE,
   RELOAD_WORKSPACE_MISSING_MESSAGE,
 } from "../../src/commands/session_actions";
@@ -76,6 +77,7 @@ describe("session_actions", () => {
         hasWorkspaceFolder: true,
         sending: false,
         reloading: false,
+        hasOtherRunningSession: false,
       }),
     ).toEqual({
       ok: false,
@@ -91,6 +93,7 @@ describe("session_actions", () => {
         hasWorkspaceFolder: false,
         sending: false,
         reloading: false,
+        hasOtherRunningSession: false,
       }),
     ).toEqual({
       ok: false,
@@ -106,6 +109,7 @@ describe("session_actions", () => {
         hasWorkspaceFolder: true,
         sending: true,
         reloading: false,
+        hasOtherRunningSession: false,
       }),
     ).toEqual({
       ok: false,
@@ -118,11 +122,28 @@ describe("session_actions", () => {
         hasWorkspaceFolder: true,
         sending: false,
         reloading: true,
+        hasOtherRunningSession: false,
       }),
     ).toEqual({
       ok: false,
       kind: "silent",
       message: null,
+    });
+  });
+
+  it("evaluates reload guard for other running session", () => {
+    expect(
+      evaluateReloadSessionGuard({
+        backendId: "codez",
+        hasWorkspaceFolder: true,
+        sending: false,
+        reloading: false,
+        hasOtherRunningSession: true,
+      }),
+    ).toEqual({
+      ok: false,
+      kind: "error",
+      message: RELOAD_OTHER_SESSION_RUNNING_MESSAGE,
     });
   });
 
@@ -133,6 +154,7 @@ describe("session_actions", () => {
         hasWorkspaceFolder: true,
         sending: false,
         reloading: false,
+        hasOtherRunningSession: false,
       }),
     ).toEqual({ ok: true });
   });

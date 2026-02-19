@@ -7,6 +7,8 @@ export const RELOAD_UNSUPPORTED_MESSAGE =
   "Reload is supported for codez sessions only.";
 export const RELOAD_SENDING_MESSAGE =
   "Cannot reload while a turn is in progress.";
+export const RELOAD_OTHER_SESSION_RUNNING_MESSAGE =
+  "Cannot reload while another session is running.";
 export const RELOAD_WORKSPACE_MISSING_MESSAGE =
   "WorkspaceFolder not found for session.";
 
@@ -56,6 +58,7 @@ export function evaluateReloadSessionGuard(args: {
   hasWorkspaceFolder: boolean;
   sending: boolean;
   reloading: boolean;
+  hasOtherRunningSession: boolean;
 }):
   | { ok: true }
   | { ok: false; kind: "info" | "error" | "silent"; message: string | null } {
@@ -67,6 +70,13 @@ export function evaluateReloadSessionGuard(args: {
   }
   if (args.sending) {
     return { ok: false, kind: "error", message: RELOAD_SENDING_MESSAGE };
+  }
+  if (args.hasOtherRunningSession) {
+    return {
+      ok: false,
+      kind: "error",
+      message: RELOAD_OTHER_SESSION_RUNNING_MESSAGE,
+    };
   }
   if (args.reloading) {
     return { ok: false, kind: "silent", message: null };

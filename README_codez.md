@@ -166,6 +166,8 @@ Codez では `config.toml` に `[[hooks]]` を定義して、内部イベント�
 
 - 変更履歴は `vscode-extension/CHANGELOG.md` の `Unreleased` を参照する
 - モデル/推論強度の変更はセッション単位で保持され、他セッションには波及しない（共有 `config.toml` への自動書き戻しはしない）
+- `turnId` は VSCode 拡張で永続キャッシュしない。Rewind/Edit 判定に使う `turnId` は `thread/resume` で再hydrationした履歴に依存する
+- Rewind/Edit が効かないときは、そのセッションで `Load history`（または履歴再hydration）を実行して `turnId` 付き user ブロックを復元する
 
 #### Claude Code 互換: tool 実行のブロック（統合hooks）
 

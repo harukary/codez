@@ -41,8 +41,19 @@ import {
   evaluateReloadSessionGuard,
   evaluateReopenSessionAction,
   parseReopenCommandArgs,
+  RELOAD_OTHER_SESSION_RUNNING_MESSAGE,
   RELOAD_UNSUPPORTED_MESSAGE,
 } from "./commands/session_actions";
+import {
+  decideLoadHistoryPostHydrationAction,
+  decideSessionSelection,
+  shouldForceLoadHistoryForRewind,
+} from "./commands/session_selection";
+import {
+  nextPendingLocalUserBlockIdOnSend,
+  nextPendingLocalUserBlockIdOnTurnCompleted,
+  resolvePendingLocalUserBlockBinding,
+} from "./runtime/pending_local_user_block";
 import {
   ChatViewProvider,
   getSessionModelState,
@@ -490,6 +501,7 @@ type SessionRuntime = {
   >;
   pendingAppMentions: Array<{ name: string; path: string }>;
   pendingUserInputQueue: QueuedUserInput[];
+  pendingLocalUserBlockId: string | null;
   flushingQueuedUserInput: boolean;
   actionCards: Map<string, ActionCardState>;
 };
@@ -1023,11 +1035,10 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       // Ensure the view is visible so the user sees the restored conversation.
       await showCodezViewContainer();
-      setActiveSession(session.id, { markRead: false });
+      setActiveSession(session.id);
       const res = await backendManager.resumeSession(session);
       void ensureModelsFetched(session);
       hydrateRuntimeFromThread(session.id, res.thread);
-      setActiveSession(session.id);
     } catch (err) {
       output.appendLine(
         `[startup] Failed to restore last sessionId=${lastSessionId}: ${String(err)}`,
@@ -1699,11 +1710,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
       const folder = resolveWorkspaceFolderForSession(session);
       const rt = ensureRuntime(session.id);
+      const hasOtherRunningSession = [...runtimeBySessionId.entries()].some(
+        ([sid, r]) =>
+          sid !== session.id &&
+          (r.sending ||
+            r.activeTurnId !== null ||
+            r.streamingAssistantItemIds.size > 0 ||
+            r.pendingApprovals.size > 0),
+      );
       const guard = evaluateReloadSessionGuard({
         backendId: session.backendId,
         hasWorkspaceFolder: Boolean(folder),
         sending: rt.sending,
         reloading: rt.reloading,
+        hasOtherRunningSession,
       });
       if (!guard.ok) {
         if (guard.kind === "info" && guard.message) {
@@ -1714,6 +1734,12 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (guard.kind === "error" && guard.message) {
           void vscode.window.showErrorMessage(guard.message);
+          if (guard.message === RELOAD_OTHER_SESSION_RUNNING_MESSAGE) {
+            chatView?.toast(
+              "info",
+              "Another session is running. Stop it and try again.",
+            );
+          }
         }
         return;
       }
@@ -2656,7 +2682,16 @@ export function activate(context: vscode.ExtensionContext): void {
         hydrateRuntimeFromThread(session.id, res.thread);
         const rt = ensureRuntime(session.id);
         rt.uiHydrationBlockedText = null;
-        setActiveSession(session.id);
+        if (
+          decideLoadHistoryPostHydrationAction({
+            activeSessionId,
+            targetSessionId: session.id,
+          }) === "refresh"
+        ) {
+          chatView.refresh();
+        } else {
+          setActiveSession(session.id);
+        }
         await showCodezViewContainer();
       },
     ),
@@ -2735,13 +2770,19 @@ export function activate(context: vscode.ExtensionContext): void {
         }
 
         // Switch tab first so unread/badge state updates immediately.
-        setActiveSession(session.id, { markRead: false });
+        // Use a single activation to avoid duplicate prompt refreshes.
+        setActiveSession(session.id);
         await showCodezViewContainer();
 
         const rt = ensureRuntime(session.id);
-        if (hasConversationBlocks(rt)) {
+        const selection = decideSessionSelection(hasConversationBlocks(rt));
+        const mustForceLoad = shouldForceLoadHistoryForRewind({
+          backendId: session.backendId,
+          hasUserBlockWithoutTurnId: hasUserBlockWithoutTurnId(rt),
+        });
+        if (selection === "alreadyLoaded" && !mustForceLoad) {
           rt.uiHydrationBlockedText = null;
-          setActiveSession(session.id);
+          chatView?.refresh();
           return;
         }
 
@@ -3165,8 +3206,18 @@ async function sendUserInput(
   const backendImages: BackendImageInput[] = [];
   const trimmed = text.trim();
   if (trimmed) {
-    upsertBlock(session.id, { id: newLocalId("user"), type: "user", text });
+    const userBlockId = newLocalId("user");
+    rt.pendingLocalUserBlockId = nextPendingLocalUserBlockIdOnSend({
+      trimmedText: trimmed,
+      userBlockId,
+    });
+    upsertBlock(session.id, { id: userBlockId, type: "user", text });
     sessionPanels?.addUserMessage(session.id, text);
+  } else {
+    rt.pendingLocalUserBlockId = nextPendingLocalUserBlockIdOnSend({
+      trimmedText: trimmed,
+      userBlockId: "",
+    });
   }
   if (images.length > 0) {
     const galleryImages: Array<{
@@ -3355,6 +3406,7 @@ async function sendUserInput(
       mentionInputs,
     );
   } catch (err) {
+    rt.pendingLocalUserBlockId = null;
     const errText = formatUnknownError(err);
     const cause = err instanceof Error ? (err as any).cause : null;
     const causeText = cause ? `\ncaused by: ${formatUnknownError(cause)}` : "";
@@ -5035,6 +5087,16 @@ function hasConversationBlocks(rt: SessionRuntime): boolean {
   });
 }
 
+function hasUserBlockWithoutTurnId(rt: SessionRuntime): boolean {
+  for (const b of rt.blocks) {
+    if (b.type !== "user") continue;
+    const turnId =
+      typeof (b as any).turnId === "string" ? (b as any).turnId.trim() : "";
+    if (!turnId) return true;
+  }
+  return false;
+}
+
 function setActiveSession(
   sessionId: string,
   opts?: { markRead?: boolean },
@@ -5685,6 +5747,7 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     approvalResolvers: new Map(),
     pendingAppMentions: [],
     pendingUserInputQueue: [],
+    pendingLocalUserBlockId: null,
     flushingQueuedUserInput: false,
     actionCards: new Map(),
   };
@@ -6037,6 +6100,21 @@ function applyServerNotification(
       rt.lastTurnStartedAtMs = Date.now();
       rt.lastTurnCompletedAtMs = null;
       rt.activeTurnId = String((n as any).params?.turn?.id ?? "") || null;
+      const binding = resolvePendingLocalUserBlockBinding({
+        activeTurnId: rt.activeTurnId,
+        pendingLocalUserBlockId: rt.pendingLocalUserBlockId,
+      });
+      if (binding.blockIdToBind) {
+        const idx = rt.blockIndexById.get(binding.blockIdToBind);
+        if (idx !== undefined) {
+          const b = rt.blocks[idx];
+          if (b && b.type === "user") {
+            (b as any).turnId = rt.activeTurnId;
+            chatView?.postBlockUpsert(sessionId, b);
+          }
+        }
+      }
+      rt.pendingLocalUserBlockId = binding.nextPendingLocalUserBlockId;
       if (
         rt.pendingInterrupt &&
         rt.activeTurnId &&
@@ -6074,6 +6152,7 @@ function applyServerNotification(
       rt.sending = false;
       rt.lastTurnCompletedAtMs = Date.now();
       rt.activeTurnId = null;
+      rt.pendingLocalUserBlockId = nextPendingLocalUserBlockIdOnTurnCompleted();
       rt.pendingInterrupt = false;
       {
         const turn = (n as any).params?.turn as
