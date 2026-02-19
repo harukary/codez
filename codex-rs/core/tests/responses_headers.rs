@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
@@ -22,6 +23,8 @@ use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use wiremock::matchers::header;
+
+const STREAM_COMPLETION_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[tokio::test]
 async fn responses_stream_includes_subagent_header_on_review() {
@@ -114,11 +117,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
         .await
         .expect("stream failed");
-    while let Some(event) = stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
+    wait_for_stream_completed(&mut stream).await;
 
     let request = request_recorder.single_request();
     assert_eq!(
@@ -220,11 +219,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
         .await
         .expect("stream failed");
-    while let Some(event) = stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
+    wait_for_stream_completed(&mut stream).await;
 
     let request = request_recorder.single_request();
     assert_eq!(
@@ -325,11 +320,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         .stream(&prompt, &model_info, &otel_manager, effort, summary, None)
         .await
         .expect("stream failed");
-    while let Some(event) = stream.next().await {
-        if matches!(event, Ok(ResponseEvent::Completed { .. })) {
-            break;
-        }
-    }
+    wait_for_stream_completed(&mut stream).await;
 
     let request = request_recorder.single_request();
     let body = request.body_json();
@@ -476,4 +467,20 @@ async fn responses_stream_includes_turn_metadata_header_for_git_workspace_e2e() 
     panic!(
         "x-codex-turn-metadata with git workspace info was never observed within 5s after git setup"
     );
+}
+
+async fn wait_for_stream_completed<S, E>(stream: &mut S)
+where
+    S: futures::Stream<Item = Result<ResponseEvent, E>> + Unpin,
+{
+    tokio::time::timeout(STREAM_COMPLETION_TIMEOUT, async {
+        while let Some(event) = stream.next().await {
+            if matches!(event, Ok(ResponseEvent::Completed { .. })) {
+                return;
+            }
+        }
+        panic!("response stream ended before completion");
+    })
+    .await
+    .expect("timed out waiting for response completion");
 }

@@ -90,6 +90,7 @@ type ActionCardState =
       kind: "skills";
       actions: Map<
         string,
+        | { kind: "refresh" }
         | { kind: "insert"; skill: SkillMetadata }
         | { kind: "download"; remote: RemoteSkillSummary }
       >;
@@ -272,14 +273,22 @@ async function pruneImageCache(
   }
 
   items.sort((a, b) => b.createdAtMs - a.createdAtMs);
-  let totalBytes = items.reduce((sum, it) => sum + it.byteLength, 0);
 
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i]!;
-    const keepByCount = i < IMAGE_CACHE_MAX_ITEMS;
-    const keepByBytes = totalBytes <= IMAGE_CACHE_MAX_TOTAL_BYTES;
-    if (keepByCount && keepByBytes) continue;
-    totalBytes -= it.byteLength;
+  // Keep newest images. If over limits, delete oldest first (not newest).
+  let keep = items.slice(0, IMAGE_CACHE_MAX_ITEMS);
+  let keepBytes = keep.reduce((sum, it) => sum + it.byteLength, 0);
+
+  // If the kept set is still too large, drop from the end (oldest within keep).
+  // Keep at least 1 item to avoid immediately evicting the newest image view.
+  while (keep.length > 1 && keepBytes > IMAGE_CACHE_MAX_TOTAL_BYTES) {
+    const dropped = keep.pop();
+    if (!dropped) break;
+    keepBytes -= dropped.byteLength;
+  }
+
+  const keepKeys = new Set(keep.map((it) => it.imageKey));
+  for (const it of items) {
+    if (keepKeys.has(it.imageKey)) continue;
     await fs.rm(it.metaPath, { force: true }).catch(() => null);
     await fs.rm(it.dataPath, { force: true }).catch(() => null);
   }
@@ -415,6 +424,11 @@ let tabOrder: TabOrderState = {
 const mcpStatusByBackendKey = new Map<string, Map<string, string>>();
 const defaultTitleRe = /^(.*)\s+\([0-9a-f]{8}\)$/i;
 type UiImageInput = { name: string; url: string };
+type QueuedUserInput = {
+  text: string;
+  images: UiImageInput[];
+  modelState: ModelState | null;
+};
 type BackendImageInput =
   | { kind: "imageUrl"; url: string }
   | { kind: "localImage"; path: string };
@@ -437,6 +451,7 @@ type SessionRuntime = {
   reloading: boolean;
   compactInFlight: boolean;
   pendingCompactBlockId: string | null;
+  clearUiHistoryAfterCompact: boolean;
   pendingAssistantDeltas: Map<string, string>;
   pendingAssistantMetaById: Map<string, string>;
   pendingAssistantDeltaFlushTimer: NodeJS.Timeout | null;
@@ -468,6 +483,8 @@ type SessionRuntime = {
     (decision: "accept" | "acceptForSession" | "decline" | "cancel") => void
   >;
   pendingAppMentions: Array<{ name: string; path: string }>;
+  pendingUserInputQueue: QueuedUserInput[];
+  flushingQueuedUserInput: boolean;
   actionCards: Map<string, ActionCardState>;
 };
 
@@ -480,6 +497,9 @@ let globalStatusText: string | null = null;
 let globalRateLimitStatusText: string | null = null;
 let globalRateLimitStatusTooltip: string | null = null;
 let customPrompts: CustomPromptSummary[] = [];
+let customPromptWatchers: vscode.FileSystemWatcher[] = [];
+let customPromptWatcherKey: string | null = null;
+let customPromptRefreshTimer: NodeJS.Timeout | null = null;
 const pendingModelFetchByBackend = new Map<string, Promise<void>>();
 const pendingCollaborationFetchByBackend = new Map<string, Promise<void>>();
 const configByBackendKey = new Map<string, ConfigReadResponse>();
@@ -520,11 +540,11 @@ export function activate(context: vscode.ExtensionContext): void {
       );
       void vscode.window
         .showInformationMessage(
-          "保存済みセッションの形式が更新されました。移行コマンドを実行すると、旧形式（v1）のセッションを codex/codez/opencode のいずれかに割り当てて復元できます。",
-          "移行する",
+          "Saved session format has been updated. Run the migration command to restore legacy (v1) sessions and assign them to codex/codez/opencode.",
+          "Migrate",
         )
         .then((picked) => {
-          if (picked === "移行する") {
+          if (picked === "Migrate") {
             void vscode.commands.executeCommand("codez.migrateSessionsV1");
           }
         });
@@ -533,7 +553,7 @@ export function activate(context: vscode.ExtensionContext): void {
   loadHiddenTabSessions(context);
   tabOrder = loadTabOrder(context);
   workspaceColorOverrides = loadWorkspaceColorOverrides(context);
-  refreshCustomPromptsFromDisk();
+  refreshCustomPromptsFromDisk(null);
   void cleanupLegacyRuntimeCache(context);
 
   backendManager = new BackendManager(output, sessions);
@@ -547,7 +567,6 @@ export function activate(context: vscode.ExtensionContext): void {
     saveSessions(context, sessions!);
     sessionTree?.refresh();
     setActiveSession(s.id);
-    refreshCustomPromptsFromDisk();
     void ensureModelsFetched(s);
     void showCodezViewContainer();
   };
@@ -619,158 +638,191 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  chatView = new ChatViewProvider(
-    context,
-    () => buildChatState(),
-    async (text, images = [], rewind = null) => {
-      if (!backendManager) throw new Error("backendManager is not initialized");
-      if (!sessions) throw new Error("sessions is not initialized");
-      const bm = backendManager;
+  const handleChatSend = async (
+    text: string,
+    images: UiImageInput[] = [],
+    rewind: { turnIndex: number } | null = null,
+    opts?: { queueIfBusy?: boolean },
+  ): Promise<void> => {
+    if (!backendManager) throw new Error("backendManager is not initialized");
+    if (!sessions) throw new Error("sessions is not initialized");
+    const bm = backendManager;
 
-      const session = activeSessionId
-        ? sessions.getById(activeSessionId)
-        : null;
-      if (!session) {
-        void vscode.window.showErrorMessage("No session selected.");
-        return;
-      }
+    const session = activeSessionId ? sessions.getById(activeSessionId) : null;
+    if (!session) {
+      void vscode.window.showErrorMessage("No session selected.");
+      return;
+    }
 
-      const trimmed = text.trim();
-      if (rewind && trimmed.startsWith("/")) {
+    const trimmed = text.trim();
+    if (rewind && trimmed.startsWith("/")) {
+      void vscode.window.showErrorMessage(
+        "Rewind is not supported for slash commands.",
+      );
+      return;
+    }
+    if (trimmed.startsWith("/") && images.length > 0) {
+      void vscode.window.showErrorMessage(
+        "Slash commands do not support images yet.",
+      );
+      return;
+    }
+
+    const rt = ensureRuntime(session.id);
+    if (opts?.queueIfBusy && rt.sending) {
+      if (!trimmed && images.length === 0) return;
+      if (rewind) {
         void vscode.window.showErrorMessage(
-          "Rewind is not supported for slash commands.",
-        );
-        return;
-      }
-      if (trimmed.startsWith("/") && images.length > 0) {
-        void vscode.window.showErrorMessage(
-          "Slash commands do not support images yet.",
+          "Rewind is not supported for queued input.",
         );
         return;
       }
       if (trimmed.startsWith("/")) {
-        const slashHandled = await handleSlashCommand(context, session, text);
-        if (slashHandled) return;
+        void vscode.window.showErrorMessage(
+          "Slash commands cannot be queued while a turn is in progress.",
+        );
+        return;
       }
+      rt.pendingUserInputQueue.push({
+        text,
+        images,
+        modelState: getSessionModelState(session.id),
+      });
+      chatView?.toast(
+        "info",
+        `Queued message (${rt.pendingUserInputQueue.length})`,
+      );
+      chatView?.refresh();
+      return;
+    }
 
-      const expanded = await expandMentions(session, text);
-      if (!expanded.ok) {
-        void vscode.window.showErrorMessage(expanded.error);
+    if (trimmed.startsWith("/")) {
+      const slashHandled = await handleSlashCommand(context, session, text);
+      if (slashHandled) return;
+    }
+
+    const expanded = await expandMentions(session, text);
+    if (!expanded.ok) {
+      void vscode.window.showErrorMessage(expanded.error);
+      return;
+    }
+
+    if (rewind) {
+      const folder = resolveWorkspaceFolderForSession(session);
+      if (!folder) {
+        void vscode.window.showErrorMessage(
+          "WorkspaceFolder not found for session.",
+        );
+        return;
+      }
+      if (session.backendId !== "codez" && session.backendId !== "opencode") {
+        void vscode.window.showInformationMessage(
+          "Rewind is supported for codez/opencode sessions only.",
+        );
         return;
       }
 
-      if (rewind) {
-        const folder = resolveWorkspaceFolderForSession(session);
-        if (!folder) {
-          void vscode.window.showErrorMessage(
-            "WorkspaceFolder not found for session.",
-          );
-          return;
-        }
-        if (session.backendId !== "codez" && session.backendId !== "opencode") {
-          void vscode.window.showInformationMessage(
-            "Rewind は codez または opencode セッションでのみ対応です。",
-          );
-          return;
-        }
+      const turnIndexRaw = (rewind as any).turnIndex;
+      const turnIndex =
+        typeof turnIndexRaw === "number" && Number.isFinite(turnIndexRaw)
+          ? Math.trunc(turnIndexRaw)
+          : 0;
 
-        const turnIndexRaw = (rewind as any).turnIndex;
-        const turnIndex =
-          typeof turnIndexRaw === "number" && Number.isFinite(turnIndexRaw)
-            ? Math.trunc(turnIndexRaw)
-            : 0;
-
-        if (!turnIndex || turnIndex < 1) {
-          void vscode.window.showErrorMessage("Invalid rewind request.");
-          return;
-        }
-
-        const rt = ensureRuntime(session.id);
-        if (rt.sending) {
-          void vscode.window.showErrorMessage(
-            "Cannot rewind while a turn is in progress.",
-          );
-          return;
-        }
-        if (
-          session.backendId === "opencode" &&
-          bm.isOpencodeSessionBusy(session)
-        ) {
-          void vscode.window.showErrorMessage(
-            "OpenCode セッションが busy のため Rewind できません。Stop してからやり直してください。",
-          );
-          return;
-        }
-
-        const rewindBlockId = newLocalId("info");
-
-        const runRewind = async (): Promise<void> => {
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "info",
-            title: "Rewind requested",
-            text: `Rewinding to turn #${turnIndex}…`,
-          });
-          chatView?.refresh();
-
-          const resumed = await withTimeout(
-            "thread/resume",
-            bm.resumeSession(session),
-            REWIND_STEP_TIMEOUT_MS,
-          );
-          const totalTurns = Array.isArray(resumed.thread.turns)
-            ? resumed.thread.turns.length
-            : 0;
-          const numTurns = totalTurns - (turnIndex - 1);
-          if (!Number.isFinite(numTurns) || numTurns < 1) {
-            throw new Error(
-              `Invalid rewind request: turnIndex=${turnIndex} totalTurns=${totalTurns}`,
-            );
-          }
-
-          const rolledBack = await withTimeout(
-            "thread/rollback",
-            bm.threadRollback(session, { numTurns }),
-            REWIND_STEP_TIMEOUT_MS,
-          );
-          hydrateRuntimeFromThread(session.id, rolledBack.thread, {
-            force: true,
-          });
-
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "info",
-            title: "Rewind completed",
-            text: `Rewound to turn #${turnIndex}.`,
-          });
-          chatView?.refresh();
-        };
-
-        try {
-          await runRewind();
-        } catch (err) {
-          const errText = formatUnknownError(err);
-          outputChannel?.appendLine(
-            `[rewind] Failed: threadId=${session.threadId} turnIndex=${turnIndex} err=${errText}`,
-          );
-          upsertBlock(session.id, {
-            id: rewindBlockId,
-            type: "error",
-            title: "Rewind failed",
-            text: `${errText}\n\nCheck 'Codex UI' output channel for backend logs.`,
-          });
-          chatView?.refresh();
-          return;
-        }
+      if (!turnIndex || turnIndex < 1) {
+        void vscode.window.showErrorMessage("Invalid rewind request.");
+        return;
       }
 
-      await sendUserInput(
-        session,
-        expanded.text,
-        images,
-        getSessionModelState(session.id),
-      );
-    },
+      if (rt.sending) {
+        void vscode.window.showErrorMessage(
+          "Cannot rewind while a turn is in progress.",
+        );
+        return;
+      }
+      if (session.backendId === "opencode" && bm.isOpencodeSessionBusy(session)) {
+        void vscode.window.showErrorMessage(
+          "Cannot rewind because the OpenCode session is busy. Stop it and try again.",
+        );
+        return;
+      }
+
+      const rewindBlockId = newLocalId("info");
+
+      const runRewind = async (): Promise<void> => {
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "info",
+          title: "Rewind requested",
+          text: `Rewinding to turn #${turnIndex}…`,
+        });
+        chatView?.refresh();
+
+        const resumed = await withTimeout(
+          "thread/resume",
+          bm.resumeSession(session),
+          REWIND_STEP_TIMEOUT_MS,
+        );
+        const totalTurns = Array.isArray(resumed.thread.turns)
+          ? resumed.thread.turns.length
+          : 0;
+        const numTurns = totalTurns - (turnIndex - 1);
+        if (!Number.isFinite(numTurns) || numTurns < 1) {
+          throw new Error(
+            `Invalid rewind request: turnIndex=${turnIndex} totalTurns=${totalTurns}`,
+          );
+        }
+
+        const rolledBack = await withTimeout(
+          "thread/rollback",
+          bm.threadRollback(session, { numTurns }),
+          REWIND_STEP_TIMEOUT_MS,
+        );
+        hydrateRuntimeFromThread(session.id, rolledBack.thread, {
+          force: true,
+        });
+
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "info",
+          title: "Rewind completed",
+          text: `Rewound to turn #${turnIndex}.`,
+        });
+        chatView?.refresh();
+      };
+
+      try {
+        await runRewind();
+      } catch (err) {
+        const errText = formatUnknownError(err);
+        outputChannel?.appendLine(
+          `[rewind] Failed: threadId=${session.threadId} turnIndex=${turnIndex} err=${errText}`,
+        );
+        upsertBlock(session.id, {
+          id: rewindBlockId,
+          type: "error",
+          title: "Rewind failed",
+          text: `${errText}\n\nCheck 'Codex UI' output channel for backend logs.`,
+        });
+        chatView?.refresh();
+        return;
+      }
+    }
+
+    await sendUserInput(
+      session,
+      expanded.text,
+      images,
+      getSessionModelState(session.id),
+    );
+  };
+
+  chatView = new ChatViewProvider(
+    context,
+    () => buildChatState(),
+    async (text, images = [], rewind = null) =>
+      await handleChatSend(text, images, rewind, { queueIfBusy: false }),
+    async (text, images = [], rewind = null) =>
+      await handleChatSend(text, images, rewind, { queueIfBusy: true }),
     async (session, args) => {
       if (!backendManager) throw new Error("backendManager is not initialized");
       const requestID = String(args.requestID ?? "").trim();
@@ -982,7 +1034,6 @@ export function activate(context: vscode.ExtensionContext): void {
       void ensureModelsFetched(session);
       hydrateRuntimeFromThread(session.id, res.thread);
       setActiveSession(session.id);
-      refreshCustomPromptsFromDisk();
     } catch (err) {
       output.appendLine(
         `[startup] Failed to restore last sessionId=${lastSessionId}: ${String(err)}`,
@@ -1010,8 +1061,8 @@ export function activate(context: vscode.ExtensionContext): void {
           };
         }),
         {
-          title: "バックエンドを起動",
-          placeHolder: "起動するバックエンドを選択してください（複数選択可）",
+          title: "Start backend(s)",
+          placeHolder: "Select backends to start (multi-select)",
           canPickMany: true,
         },
       );
@@ -1067,7 +1118,7 @@ export function activate(context: vscode.ExtensionContext): void {
             : "";
         if (!workspaceFolderUri) {
           void vscode.window.showErrorMessage(
-            "workspaceFolderUri が不正です。",
+            "Invalid workspaceFolderUri.",
           );
           return;
         }
@@ -1085,35 +1136,35 @@ export function activate(context: vscode.ExtensionContext): void {
           idx: number | null;
         }> = [
           {
-            label: "自動",
-            description: "ハッシュから自動で色を割り当て",
+            label: "Auto",
+            description: "Assign a color automatically (hash)",
             idx: null,
           },
           ...WORKSPACE_COLOR_PALETTE.map((hex, idx) => {
             const name =
               idx === 0
-                ? "青"
+                ? "Blue"
                 : idx === 1
-                  ? "緑"
+                  ? "Green"
                   : idx === 2
-                    ? "黄"
+                    ? "Yellow"
                     : idx === 3
-                      ? "オレンジ"
+                      ? "Orange"
                       : idx === 4
-                        ? "赤"
+                        ? "Red"
                         : idx === 5
-                          ? "紫"
+                          ? "Purple"
                           : idx === 6
-                            ? "ピンク"
+                            ? "Pink"
                             : idx === 7
-                              ? "ミント"
+                              ? "Mint"
                               : idx === 8
-                                ? "アプリコット"
+                                ? "Apricot"
                                 : idx === 9
-                                  ? "水色"
+                                  ? "Light blue"
                                   : idx === 10
-                                    ? "ラベンダー"
-                                    : "グレー";
+                                    ? "Lavender"
+                                    : "Gray";
             return {
               label: name,
               description: String(hex),
@@ -1123,7 +1174,7 @@ export function activate(context: vscode.ExtensionContext): void {
         ];
 
         const picked = await vscode.window.showQuickPick(items, {
-          title: "プロジェクト色を選択",
+          title: "Pick workspace color",
           placeHolder,
         });
         if (!picked) return;
@@ -1203,7 +1254,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const legacy = readPersistedSessionsV1(extensionContext);
       if (legacy.length === 0) {
         void vscode.window.showInformationMessage(
-          "移行対象の v1 セッションが見つかりませんでした。",
+          "No legacy v1 sessions found to migrate.",
         );
         return;
       }
@@ -1234,15 +1285,15 @@ export function activate(context: vscode.ExtensionContext): void {
             backendId,
           })),
           {
-            label: "(このフォルダはスキップ)",
+            label: "(Skip this folder)",
             description: "",
             backendId: null,
           },
         ];
         const picked = await vscode.window.showQuickPick(items, {
-          title: `セッション移行: ${folderLabel}`,
+          title: `Migrate sessions: ${folderLabel}`,
           placeHolder:
-            "このフォルダの旧セッションをどのバックエンド群に割り当てますか？",
+            "Which backend should legacy sessions in this folder be assigned to?",
         });
         if (!picked || !picked.backendId) {
           skippedFolders.push(folderLabel);
@@ -1287,8 +1338,8 @@ export function activate(context: vscode.ExtensionContext): void {
       if (dedupedMigrated.length === 0) {
         void vscode.window.showInformationMessage(
           skipped > 0
-            ? "移行対象がすべて既存セッションと重複していたため、追加の移行は行いませんでした。"
-            : "移行対象がありませんでした。",
+            ? "All sessions to migrate were duplicates; nothing was added."
+            : "Nothing to migrate.",
         );
         return;
       }
@@ -1310,11 +1361,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
       const skippedText =
         skippedFolders.length > 0
-          ? `（スキップ: ${skippedFolders.length}フォルダ）`
+          ? ` (skipped: ${skippedFolders.length} folders)`
           : "";
-      const dedupeText = skipped > 0 ? `（重複でスキップ: ${skipped}件）` : "";
+      const dedupeText = skipped > 0 ? ` (deduped: ${skipped} duplicates)` : "";
       void vscode.window.showInformationMessage(
-        `移行完了: ${dedupedMigrated.length}件${skippedText}${dedupeText}`,
+        `Migration completed: ${dedupedMigrated.length} added${skippedText}${dedupeText}`,
       );
     }),
   );
@@ -1509,7 +1560,6 @@ export function activate(context: vscode.ExtensionContext): void {
         void ensureModelsFetched(session);
         hydrateRuntimeFromThread(session.id, resumed.thread);
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk();
         await showCodezViewContainer();
         return;
       }
@@ -1547,7 +1597,7 @@ export function activate(context: vscode.ExtensionContext): void {
           (backendId !== "codex" && backendId !== "codez")
         ) {
           void vscode.window.showErrorMessage(
-            "このスレッドは opencode と相互に互換がないため、codex/codez ↔ opencode の開き直しはできません。",
+            "This thread is not compatible with opencode history, so it cannot be reopened across codex/codez <-> opencode.",
           );
           return;
         }
@@ -1588,7 +1638,6 @@ export function activate(context: vscode.ExtensionContext): void {
           void ensureModelsFetched(session);
           hydrateRuntimeFromThread(session.id, resumed.thread);
           setActiveSession(session.id);
-          refreshCustomPromptsFromDisk();
           await showCodezViewContainer();
         } catch (err) {
           output.appendLine(`[resume] Failed to reopen thread: ${String(err)}`);
@@ -1666,9 +1715,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (session.backendId !== "codez") {
         void vscode.window.showInformationMessage(
-          "Reload は codez セッションのみ対応です。",
+          "Reload is supported for codez sessions only.",
         );
-        chatView?.toast("info", "Reload は codez セッションのみ対応です。");
+        chatView?.toast("info", "Reload is supported for codez sessions only.");
         return;
       }
 
@@ -2003,7 +2052,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
       if (session.backendId !== "codez") {
         void vscode.window.showInformationMessage(
-          "アカウントの作成/切り替えは codez セッションのみ対応です。",
+          "Account creation/switching is supported for codez sessions only.",
         );
         return;
       }
@@ -2123,7 +2172,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (session.backendId === "opencode") {
           chatView?.toast(
             "info",
-            "opencode backend では mode 切替は未対応です。",
+            "Mode switching is not supported on the opencode backend.",
           );
           return;
         }
@@ -2132,7 +2181,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (presets.length === 0) {
           chatView?.toast(
             "info",
-            "collaboration preset が見つからないため、mode を切り替えできません。",
+            "No collaboration presets found; cannot switch mode.",
           );
           return;
         }
@@ -2170,7 +2219,7 @@ export function activate(context: vscode.ExtensionContext): void {
           id: newLocalId("collabToggle"),
           type: "system",
           title: "Collaboration mode",
-          text: `次のメッセージから '${next.label}' を適用します。`,
+          text: `From the next message, apply '${next.label}'.`,
         });
         chatView?.refresh();
       },
@@ -2201,7 +2250,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
         if (session.backendId !== "codez") {
           void vscode.window.showInformationMessage(
-            "Agents は codez セッションでのみ利用できます。",
+            "Agents are available for codez sessions only.",
           );
           return;
         }
@@ -2579,7 +2628,6 @@ export function activate(context: vscode.ExtensionContext): void {
         void ensureModelsFetched(session);
         hydrateRuntimeFromThread(session.id, res.thread);
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk();
         await showCodezViewContainer();
       },
     ),
@@ -2610,11 +2658,11 @@ export function activate(context: vscode.ExtensionContext): void {
         if (anyRunning) {
           const rt = ensureRuntime(session.id);
           rt.uiHydrationBlockedText =
-            "他のセッションが実行中のため、このセッションの履歴を読み込めません。\nStop してから Load history を実行してください。";
+            "Cannot load this session's history while another session is running.\nStop it, then run 'Load history'.";
           chatView.refresh();
           chatView.toast(
             "info",
-            "他のセッションが実行中です。Stop してから実行してください。",
+            "Another session is running. Stop it and try again.",
           );
           return;
         }
@@ -2625,7 +2673,6 @@ export function activate(context: vscode.ExtensionContext): void {
         const rt = ensureRuntime(session.id);
         rt.uiHydrationBlockedText = null;
         setActiveSession(session.id);
-        refreshCustomPromptsFromDisk();
         await showCodezViewContainer();
       },
     ),
@@ -2703,20 +2750,20 @@ export function activate(context: vscode.ExtensionContext): void {
           return;
         }
 
-        // Session switching should be a pure UI operation.
-        // If history hasn't been loaded yet (e.g. after extension host reload), do NOT auto-resume:
-        // doing network calls on tab-click can interrupt or confuse in-progress turns.
+        // Switch tab first so unread/badge state updates immediately.
         setActiveSession(session.id, { markRead: false });
         await showCodezViewContainer();
 
         const rt = ensureRuntime(session.id);
         if (hasConversationBlocks(rt)) {
           rt.uiHydrationBlockedText = null;
-        } else {
-          rt.uiHydrationBlockedText =
-            "このセッションの履歴はまだ UI に読み込まれていません。\nLoad history を押すか、SESSIONS から開いてください。";
+          setActiveSession(session.id);
+          return;
         }
-        setActiveSession(session.id);
+
+        await vscode.commands.executeCommand("codez._internal.loadHistoryForSession", {
+          sessionId: session.id,
+        });
       },
     ),
   );
@@ -3114,8 +3161,8 @@ async function pickBackendIdForNewSession(
       backendId,
     })),
     {
-      title: "バックエンドを選択",
-      placeHolder: "このセッションをどのバックエンドで作成しますか？",
+      title: "Select backend",
+      placeHolder: "Which backend should this session use?",
     },
   );
   return picked?.backendId ?? null;
@@ -3345,6 +3392,32 @@ async function sendUserInput(
   schedulePersistRuntime(session.id);
 }
 
+async function flushQueuedUserInput(sessionId: string): Promise<void> {
+  if (!sessions) return;
+  const rt = ensureRuntime(sessionId);
+  if (rt.flushingQueuedUserInput) return;
+  if (rt.sending) return;
+  if (rt.pendingUserInputQueue.length === 0) return;
+
+  const session = sessions.getById(sessionId);
+  if (!session) {
+    rt.pendingUserInputQueue.length = 0;
+    chatView?.refresh();
+    return;
+  }
+
+  rt.flushingQueuedUserInput = true;
+  try {
+    if (rt.sending) return;
+    const next = rt.pendingUserInputQueue.shift();
+    if (!next) return;
+    await sendUserInput(session, next.text, next.images, next.modelState);
+  } finally {
+    rt.flushingQueuedUserInput = false;
+    chatView?.refresh();
+  }
+}
+
 function registerActionCard(
   sessionId: string,
   cardId: string,
@@ -3569,7 +3642,7 @@ async function handleSlashCommand(
         id: newLocalId("mcpNoFolder"),
         type: "error",
         title: "MCP servers",
-        text: "このセッションに紐づく workspace folder が見つかりません。",
+        text: "Workspace folder not found for this session.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3581,7 +3654,7 @@ async function handleSlashCommand(
         id: newLocalId("mcpUnsupported"),
         type: "info",
         title: "MCP servers",
-        text: "opencode backend では MCP server の一覧表示は未対応です。",
+        text: "Listing MCP servers is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3609,7 +3682,7 @@ async function handleSlashCommand(
         id: newLocalId("appsUnsupported"),
         type: "info",
         title: "Apps",
-        text: "opencode backend では /apps は未対応です。",
+        text: "/apps is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3637,7 +3710,7 @@ async function handleSlashCommand(
         id: newLocalId("personalityUnsupported"),
         type: "info",
         title: "Personality",
-        text: "opencode backend では /personality は未対応です。",
+        text: "/personality is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3665,7 +3738,7 @@ async function handleSlashCommand(
         id: newLocalId("debugConfigUnsupported"),
         type: "info",
         title: "Debug config",
-        text: "opencode backend では /debug-config は未対応です。",
+        text: "/debug-config is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3693,7 +3766,7 @@ async function handleSlashCommand(
         id: newLocalId("experimentalUnsupported"),
         type: "info",
         title: "Experimental features",
-        text: "opencode backend では /experimental は未対応です。",
+        text: "/experimental is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3709,17 +3782,17 @@ async function handleSlashCommand(
       {
         key: "shell_snapshot",
         label: "Shell snapshot",
-        description: "ログインシェル再実行を減らして実行を高速化",
+        description: "Speed up execution by reducing login shell restarts",
       },
       {
         key: "collab",
         label: "Sub-agents",
-        description: "サブエージェント実行を有効化",
+        description: "Enable sub-agent runs",
       },
       {
         key: "apps",
         label: "Apps",
-        description: "$ メンションで Apps (Connectors) を利用",
+        description: "Use Apps (Connectors) via $ mentions",
       },
     ] as const;
 
@@ -3733,7 +3806,7 @@ async function handleSlashCommand(
 
     const picked = await vscode.window.showQuickPick(items, {
       title: "Experimental features",
-      placeHolder: "有効にしたい機能を選択（複数可）",
+      placeHolder: "Select features to enable (multi-select)",
       canPickMany: true,
       matchOnDescription: true,
       matchOnDetail: true,
@@ -3762,7 +3835,7 @@ async function handleSlashCommand(
         id: newLocalId("experimentalNoChange"),
         type: "info",
         title: "Experimental features",
-        text: "変更はありません。",
+        text: "No changes.",
       });
     } else {
       const targetText = preferredPath
@@ -3800,7 +3873,7 @@ async function handleSlashCommand(
         id: newLocalId("collabUnsupported"),
         type: "info",
         title: "Collaboration mode",
-        text: "opencode backend では /collab は未対応です。",
+        text: "/collab is not supported on the opencode backend.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3817,7 +3890,7 @@ async function handleSlashCommand(
         id: newLocalId("collabEmpty"),
         type: "info",
         title: "Collaboration mode",
-        text: "利用可能な collaboration preset がありません。",
+        text: "No collaboration presets available.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3840,7 +3913,7 @@ async function handleSlashCommand(
 
     const picked = await vscode.window.showQuickPick(items, {
       title: "Collaboration mode",
-      placeHolder: "Pick a collaboration preset (Ctrl+Shift cycles).",
+      placeHolder: "Pick a collaboration preset (Shift+Tab cycles in input).",
       matchOnDescription: true,
       matchOnDetail: true,
     });
@@ -3878,7 +3951,7 @@ async function handleSlashCommand(
         id: newLocalId("initNoFolder"),
         type: "error",
         title: "Init failed",
-        text: "このセッションに紐づく workspace folder が見つかりません。",
+        text: "Workspace folder not found for this session.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3912,7 +3985,7 @@ async function handleSlashCommand(
         id: newLocalId("initSkip"),
         type: "info",
         title: "Init skipped",
-        text: `${DEFAULT_PROJECT_DOC_FILENAME} が既に存在するため、上書き防止のため /init をスキップしました。`,
+        text: `${DEFAULT_PROJECT_DOC_FILENAME} already exists, so /init was skipped to avoid overwriting it.`,
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -3941,7 +4014,7 @@ async function handleSlashCommand(
         id: newLocalId("compactUnsupported"),
         type: "info",
         title: "Compact (codez only)",
-        text: "/compact は codez セッションのみ対応です。",
+        text: "/compact is supported for codez sessions only.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -4036,7 +4109,9 @@ async function handleSlashCommand(
     return true;
   }
   if (cmd === "skills") {
-    await showSkillsActionCard(session);
+    const forceReload = arg === "--reload" || arg === "reload";
+    if (forceReload) chatView?.invalidateSkillIndex(session.id);
+    await showSkillsActionCard(session, { forceReload });
     return true;
   }
   if (cmd === "agents") {
@@ -4223,23 +4298,23 @@ async function handleSlashCommand(
         "Slash commands:",
         mineSelected
           ? "- /compact: Compact context"
-          : "- /compact: (codez 選択時のみ対応)",
+          : "- /compact: (codez sessions only)",
         "- /new: New session",
         "- /init: Create AGENTS.md",
         "- /resume: Resume from history",
         "- /status: Show status",
         "- /mcp: List MCP servers",
         "- /apps: Browse apps",
-        "- /collab: Change collaboration mode (Ctrl+Shift)",
+        "- /collab: Change collaboration mode (Shift+Tab in input)",
         "- /personality: Set personality",
         "- /debug-config: Show config details",
         "- /experimental: Toggle experimental features",
         "- /diff: Open Latest Diff",
         "- /rename <title>: Rename session",
-        "- /skills: Browse skills",
+        "- /skills [--reload]: Browse skills",
         mineSelected
           ? "- /agents: Browse agents"
-          : "- /agents: Browse agents (codez 選択時のみ対応)",
+          : "- /agents: Browse agents (codez sessions only)",
         "- /account: Account management",
         "- /help: Show help",
         customList ? "\nCustom prompts:" : null,
@@ -4356,7 +4431,7 @@ async function showAppsActionCard(
         id: cardId,
         type: "info",
         title: "Apps",
-        text: "利用可能な app が見つかりませんでした。",
+        text: "No apps available.",
       });
       chatView?.refresh();
       schedulePersistRuntime(session.id);
@@ -4478,6 +4553,18 @@ async function showSkillsActionCard(
   const skills = entry?.skills ?? [];
   const errors = entry?.errors ?? [];
 
+  if (!localError) {
+    chatView?.postSkillIndex(
+      session.id,
+      skills.map((s) => ({
+        name: s.name,
+        description: s.description,
+        scope: s.scope,
+        path: s.path,
+      })),
+    );
+  }
+
   let remoteSkills: RemoteSkillSummary[] = [];
   let remoteError: string | null = null;
   try {
@@ -4528,12 +4615,16 @@ async function showSkillsActionCard(
     string,
     | { kind: "insert"; skill: SkillMetadata }
     | { kind: "download"; remote: RemoteSkillSummary }
+    | { kind: "refresh" }
   >();
   const actionButtons: Array<{
     id: string;
     label: string;
     style?: "primary" | "default";
   }> = [];
+
+  actions.set("skills:refresh", { kind: "refresh" });
+  actionButtons.push({ id: "skills:refresh", label: "Refresh", style: "primary" });
 
   for (const s of skills) {
     const id = `skill:insert:${s.name}`;
@@ -4700,6 +4791,14 @@ async function handleActionCardAction(args: {
   if (state.kind === "skills") {
     const action = state.actions.get(args.actionId);
     if (!action) return;
+    if (action.kind === "refresh") {
+      chatView?.invalidateSkillIndex(session.id);
+      await showSkillsActionCard(session, {
+        cardId: args.cardId,
+        forceReload: true,
+      });
+      return;
+    }
     if (action.kind === "insert") {
       chatView?.insertIntoInput(`$${action.skill.name} `);
       return;
@@ -4982,6 +5081,7 @@ function setActiveSession(
     if (extensionContext) saveHiddenTabSessions(extensionContext);
   }
   if (s) void ensureModelsFetched(s);
+  refreshCustomPromptsFromDisk(s);
   chatView?.refresh();
   chatView?.syncBlocksForActiveSession();
 }
@@ -5305,7 +5405,7 @@ function formatResetsAt(unixSeconds: number): string {
   return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${hhmm}`;
 }
 
-function formatDurationJa(ms: number): string {
+function formatDurationEn(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const totalMinutes = Math.floor(totalSeconds / 60);
   const totalHours = Math.floor(totalMinutes / 60);
@@ -5313,10 +5413,10 @@ function formatDurationJa(ms: number): string {
   const hours = totalHours % 24;
   const minutes = totalMinutes % 60;
   const parts: string[] = [];
-  if (days > 0) parts.push(`${days}日`);
-  if (hours > 0 || days > 0) parts.push(`${hours}時間`);
-  parts.push(`${minutes}分`);
-  return parts.join("");
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0 || days > 0) parts.push(`${hours}h`);
+  parts.push(`${minutes}m`);
+  return parts.join(" ");
 }
 
 function formatResetsAtTooltip(unixSeconds: number): string {
@@ -5330,8 +5430,8 @@ function formatResetsAtTooltip(unixSeconds: number): string {
   });
   const deltaMs = d.getTime() - Date.now();
   if (!Number.isFinite(deltaMs)) return abs;
-  if (deltaMs >= 0) return `${abs}（あと${formatDurationJa(deltaMs)}）`;
-  return `${abs}（${formatDurationJa(-deltaMs)}前）`;
+  if (deltaMs >= 0) return `${abs} (in ${formatDurationEn(deltaMs)})`;
+  return `${abs} (${formatDurationEn(-deltaMs)} ago)`;
 }
 
 function resolveCodexHome(): string {
@@ -5412,7 +5512,34 @@ function parsePromptFrontmatter(content: string): {
 }
 
 async function loadCustomPromptsFromDisk(): Promise<CustomPromptSummary[]> {
-  const dir = path.join(resolveCodexHome(), "prompts");
+  const session = activeSessionId ? sessions?.getById(activeSessionId) ?? null : null;
+  return await loadCustomPromptsFromDiskForSession(session);
+}
+
+async function loadCustomPromptsFromDiskForSession(
+  session: Session | null,
+): Promise<CustomPromptSummary[]> {
+  const userDir = path.join(resolveCodexHome(), "prompts");
+  const repoDir = await resolveRepoPromptsDirForSession(session);
+
+  const exclude = new Set<string>();
+  const out: CustomPromptSummary[] = [];
+
+  if (repoDir) {
+    const repoPrompts = await discoverPromptsInDir(repoDir, exclude);
+    for (const p of repoPrompts) exclude.add(p.name);
+    out.push(...repoPrompts);
+  }
+  out.push(...(await discoverPromptsInDir(userDir, exclude)));
+
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
+async function discoverPromptsInDir(
+  dir: string,
+  exclude: Set<string>,
+): Promise<CustomPromptSummary[]> {
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const out: CustomPromptSummary[] = [];
@@ -5422,6 +5549,7 @@ async function loadCustomPromptsFromDisk(): Promise<CustomPromptSummary[]> {
       if (!ext || ext.toLowerCase() !== ".md") continue;
       const name = path.parse(entry.name).name.trim();
       if (!name) continue;
+      if (exclude.has(name)) continue;
       const fullPath = path.join(dir, entry.name);
       const content = await fs.readFile(fullPath, "utf8").catch(() => null);
       if (content === null) continue;
@@ -5441,13 +5569,106 @@ async function loadCustomPromptsFromDisk(): Promise<CustomPromptSummary[]> {
   }
 }
 
-function refreshCustomPromptsFromDisk(): void {
-  void loadCustomPromptsFromDisk()
+function refreshCustomPromptsFromDisk(session: Session | null): void {
+  ensureCustomPromptWatchers(session);
+  void loadCustomPromptsFromDiskForSession(session)
     .then((next) => {
       if (customPrompts.some((p) => p.source === "server")) return;
       setCustomPrompts(next);
     })
     .catch(() => {});
+}
+
+function scheduleRefreshCustomPromptsFromDisk(session: Session | null): void {
+  if (customPromptRefreshTimer) clearTimeout(customPromptRefreshTimer);
+  customPromptRefreshTimer = setTimeout(() => {
+    customPromptRefreshTimer = null;
+    refreshCustomPromptsFromDisk(session);
+  }, 150);
+}
+
+async function resolveRepoPromptsDirForSession(
+  session: Session | null,
+): Promise<string | null> {
+  const folderUri =
+    session?.workspaceFolderUri ??
+    (typeof vscode.workspace.workspaceFolders?.[0]?.uri?.toString === "function"
+      ? vscode.workspace.workspaceFolders?.[0]?.uri.toString()
+      : null);
+  if (!folderUri) return null;
+  const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(folderUri));
+  if (!folder) return null;
+
+  const gitRoot = await findGitRoot(folder.uri.fsPath);
+  if (!gitRoot) return null;
+  return path.join(gitRoot, ".codex", "prompts");
+}
+
+async function findGitRoot(start: string): Promise<string | null> {
+  let cur = path.resolve(start);
+  for (let i = 0; i < 50; i += 1) {
+    const gitPath = path.join(cur, ".git");
+    try {
+      const st = await fs.stat(gitPath);
+      if (st.isDirectory() || st.isFile()) return cur;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code && code !== "ENOENT" && code !== "ENOTDIR") {
+        outputChannel?.appendLine(
+          `[prompts] Failed to stat ${gitPath}: ${String((err as Error).message ?? err)}`,
+        );
+      }
+    }
+
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  return null;
+}
+
+function ensureCustomPromptWatchers(session: Session | null): void {
+  if (!extensionContext) return;
+
+  const folder =
+    session?.workspaceFolderUri
+      ? vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(session.workspaceFolderUri))
+      : null;
+  const folderFsPath = folder?.uri.fsPath ?? null;
+  const userDir = path.join(resolveCodexHome(), "prompts");
+
+  const key = `${folderFsPath ?? "(none)"}|${userDir}`;
+  if (customPromptWatcherKey === key) return;
+  customPromptWatcherKey = key;
+
+  for (const w of customPromptWatchers) w.dispose();
+  customPromptWatchers = [];
+
+  const onChange = (): void => scheduleRefreshCustomPromptsFromDisk(session);
+
+  const userPattern = new vscode.RelativePattern(userDir, "*.md");
+  const userWatcher = vscode.workspace.createFileSystemWatcher(userPattern);
+  userWatcher.onDidChange(onChange);
+  userWatcher.onDidCreate(onChange);
+  userWatcher.onDidDelete(onChange);
+  customPromptWatchers.push(userWatcher);
+  extensionContext.subscriptions.push(userWatcher);
+
+  if (folderFsPath) {
+    void findGitRoot(folderFsPath).then((gitRoot) => {
+      if (!gitRoot) return;
+      // Active session may have changed since this async resolution; key guards against staleness.
+      if (customPromptWatcherKey !== key) return;
+      const repoDir = path.join(gitRoot, ".codex", "prompts");
+      const repoPattern = new vscode.RelativePattern(repoDir, "*.md");
+      const repoWatcher = vscode.workspace.createFileSystemWatcher(repoPattern);
+      repoWatcher.onDidChange(onChange);
+      repoWatcher.onDidCreate(onChange);
+      repoWatcher.onDidDelete(onChange);
+      customPromptWatchers.push(repoWatcher);
+      extensionContext?.subscriptions.push(repoWatcher);
+    });
+  }
 }
 
 function ensureRuntime(sessionId: string): SessionRuntime {
@@ -5463,6 +5684,7 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     reloading: false,
     compactInFlight: false,
     pendingCompactBlockId: null,
+    clearUiHistoryAfterCompact: false,
     pendingAssistantDeltas: new Map(),
     pendingAssistantMetaById: new Map(),
     pendingAssistantDeltaFlushTimer: null,
@@ -5478,6 +5700,8 @@ function ensureRuntime(sessionId: string): SessionRuntime {
     pendingApprovals: new Map(),
     approvalResolvers: new Map(),
     pendingAppMentions: [],
+    pendingUserInputQueue: [],
+    flushingQueuedUserInput: false,
     actionCards: new Map(),
   };
   runtimeBySessionId.set(sessionId, rt);
@@ -5751,6 +5975,31 @@ function applyServerNotification(
       return;
     case "thread/started":
       return;
+    case "error": {
+      const p = (n as any).params as {
+        error?: { message?: unknown; additionalDetails?: unknown };
+        willRetry?: unknown;
+        threadId?: unknown;
+        turnId?: unknown;
+      };
+      const message = String(p?.error?.message ?? "").trim();
+      const additionalDetailsRaw = p?.error?.additionalDetails;
+      const additionalDetails =
+        typeof additionalDetailsRaw === "string"
+          ? String(additionalDetailsRaw).trim()
+          : "";
+      const willRetry = Boolean(p?.willRetry ?? false);
+      const turnId = String(p?.turnId ?? "").trim();
+
+      upsertBlock(sessionId, {
+        id: `turn-error:${turnId || newLocalId("error")}`,
+        type: "error",
+        title: willRetry ? "Error (will retry)" : "Error",
+        text: additionalDetails ? `${message}\n\n${additionalDetails}` : message,
+      });
+      chatView?.refresh();
+      return;
+    }
     case "deprecationNotice": {
       const p = (n as any).params as { summary?: unknown; details?: unknown };
       const summary = String(p?.summary ?? "").trim();
@@ -5775,17 +6024,27 @@ function applyServerNotification(
       const blockId = rt.pendingCompactBlockId
         ? rt.pendingCompactBlockId
         : `compacted:${turnId || Date.now()}`;
-      upsertBlock(sessionId, {
+      const divider: ChatBlock = {
         id: blockId,
         type: "divider",
         status: "completed",
         text: `${line}\n• Context compacted`,
-      });
+      };
+      upsertBlock(sessionId, divider);
       // Auto-compaction can happen mid-turn (the backend continues working).
       // In that case, do not unlock the input.
       if (rt.activeTurnId === null) rt.sending = false;
       rt.compactInFlight = false;
       rt.pendingCompactBlockId = null;
+
+      if (shouldClearUiHistoryOnCompact(sessionId)) {
+        const unsafe =
+          rt.activeTurnId !== null ||
+          rt.streamingAssistantItemIds.size > 0 ||
+          rt.pendingAssistantDeltas.size > 0;
+        if (unsafe) rt.clearUiHistoryAfterCompact = true;
+        else clearUiHistoryForCompact(sessionId, rt, divider);
+      }
       chatView?.refresh();
       return;
     }
@@ -5832,6 +6091,31 @@ function applyServerNotification(
       rt.lastTurnCompletedAtMs = Date.now();
       rt.activeTurnId = null;
       rt.pendingInterrupt = false;
+      {
+        const turn = (n as any).params?.turn as
+          | { id?: unknown; status?: unknown; error?: { message?: unknown; additionalDetails?: unknown } | null }
+          | undefined;
+        const status = String(turn?.status ?? "");
+        if (status === "Failed") {
+          const turnId = String(turn?.id ?? "").trim();
+          const message = String(turn?.error?.message ?? "").trim();
+          const additionalDetailsRaw = turn?.error?.additionalDetails;
+          const additionalDetails =
+            typeof additionalDetailsRaw === "string"
+              ? String(additionalDetailsRaw).trim()
+              : "";
+          if (message) {
+            upsertBlock(sessionId, {
+              id: `turn-error:${turnId || newLocalId("error")}`,
+              type: "error",
+              title: "Turn failed",
+              text: additionalDetails
+                ? `${message}\n\n${additionalDetails}`
+                : message,
+            });
+          }
+        }
+      }
       // IMPORTANT: clear the streaming set before flushing pending deltas so the webview sees
       // `streaming=false` for the final append. Otherwise, if messages are delivered out of order
       // (append after upsert), the webview can get stuck in the <pre> fast-path and skip Markdown
@@ -5850,7 +6134,19 @@ function applyServerNotification(
       }
       markUnreadSession(sessionId);
       sessionPanels?.markTurnCompleted(sessionId);
+
+      if (rt.clearUiHistoryAfterCompact) {
+        const unsafe =
+          rt.streamingAssistantItemIds.size > 0 ||
+          rt.pendingAssistantDeltas.size > 0 ||
+          rt.activeTurnId !== null;
+        if (!unsafe) {
+          rt.clearUiHistoryAfterCompact = false;
+          clearUiHistoryForCompact(sessionId, rt, null);
+        }
+      }
       chatView?.refresh();
+      void flushQueuedUserInput(sessionId);
       return;
     case "thread/tokenUsage/updated":
       rt.tokenUsage = (n as any).params.tokenUsage as ThreadTokenUsage;
@@ -5859,6 +6155,15 @@ function applyServerNotification(
       return;
     case "item/agentMessage/delta": {
       const id = (n as any).params.itemId as string;
+      // If we receive assistant deltas after the backend claims the turn is completed, keep the
+      // input locked until the item completes. This surfaces an ordering issue without silently
+      // allowing the user to start a new turn while output is still streaming.
+      if (rt.activeTurnId === null && !rt.sending) {
+        outputChannel?.appendLine(
+          `[turn] Received agentMessage delta after turn completed; locking input until item completes: sessionId=${sessionId} itemId=${id}`,
+        );
+        rt.sending = true;
+      }
       const block = getOrCreateBlock(rt, id, () => ({
         id,
         type: "assistant",
@@ -6500,6 +6805,20 @@ function applyItemLifecycle(
         streaming: !completed,
       }));
       if (block.type === "assistant") {
+        if (completed) {
+          // If the "completed" item arrives before the pending delta flush runs, drop the
+          // pending delta buffer for this item. The completed payload already contains the
+          // full text, and applying pending deltas afterwards would duplicate suffixes.
+          const removed = rt.pendingAssistantDeltas.delete(id);
+          if (
+            removed &&
+            rt.pendingAssistantDeltas.size === 0 &&
+            rt.pendingAssistantDeltaFlushTimer
+          ) {
+            clearTimeout(rt.pendingAssistantDeltaFlushTimer);
+            rt.pendingAssistantDeltaFlushTimer = null;
+          }
+        }
         if (completed && typeof (item as any).text === "string") {
           block.text = String((item as any).text);
         }
@@ -6512,6 +6831,13 @@ function applyItemLifecycle(
       }
       if (completed) rt.streamingAssistantItemIds.delete(id);
       else rt.streamingAssistantItemIds.add(id);
+
+      // If we previously re-locked the input due to late deltas, unlock once all assistant
+      // messages have completed and there is no active turn.
+      if (completed && rt.activeTurnId === null && rt.streamingAssistantItemIds.size === 0) {
+        rt.sending = false;
+        rt.lastTurnCompletedAtMs = Date.now();
+      }
       chatView?.postBlockUpsert(sessionId, block);
       break;
     }
@@ -7184,6 +7510,84 @@ function newLocalId(prefix: string): string {
   return `${prefix}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
 }
 
+function shouldClearUiHistoryOnCompact(sessionId: string): boolean {
+  if (!sessions) return false;
+  const session = sessions.getById(sessionId);
+  if (!session) return false;
+  try {
+    const wk = vscode.Uri.parse(session.workspaceFolderUri);
+    const cfg = vscode.workspace.getConfiguration("codez", wk);
+    return cfg.get<boolean>("ui.clearHistoryOnCompact") ?? false;
+  } catch {
+    return false;
+  }
+}
+
+function keepUiHistoryPairsOnCompact(sessionId: string): number {
+  if (!sessions) return 10;
+  const session = sessions.getById(sessionId);
+  if (!session) return 10;
+  try {
+    const wk = vscode.Uri.parse(session.workspaceFolderUri);
+    const cfg = vscode.workspace.getConfiguration("codez", wk);
+    const raw = cfg.get<number>("ui.clearHistoryOnCompactKeepPairs") ?? 10;
+    if (!Number.isFinite(raw)) return 10;
+    return Math.max(0, Math.trunc(raw));
+  } catch {
+    return 10;
+  }
+}
+
+function clearUiHistoryForCompact(
+  sessionId: string,
+  rt: SessionRuntime,
+  divider: ChatBlock | null,
+): void {
+  const keepPairs = keepUiHistoryPairsOnCompact(sessionId);
+
+  // Keep recent conversation (user/assistant) blocks only, dropping tool/output blocks to reduce memory.
+  let startIdx = 0;
+  if (keepPairs > 0) {
+    let seenUsers = 0;
+    for (let i = rt.blocks.length - 1; i >= 0; i -= 1) {
+      const b = rt.blocks[i];
+      if (!b) continue;
+      if (b.type !== "user") continue;
+      seenUsers += 1;
+      if (seenUsers >= keepPairs) {
+        startIdx = i;
+        break;
+      }
+    }
+  } else {
+    startIdx = rt.blocks.length;
+  }
+
+  const conversation = rt.blocks
+    .slice(startIdx)
+    .filter((b) => b && (b.type === "user" || b.type === "assistant"));
+
+  const next: ChatBlock[] = [];
+  if (divider) next.push(divider);
+  next.push(...conversation);
+  next.push({
+    id: newLocalId("uiCleared"),
+    type: "system",
+    title: "History trimmed",
+    text:
+      keepPairs > 0
+        ? `Context was compacted. To reduce memory usage, the UI history was trimmed (keeping the last ${keepPairs} exchanges).\nUse 'Load history' to re-hydrate if needed.`
+        : "Context was compacted. To reduce memory usage, the UI history was trimmed.\nUse 'Load history' to re-hydrate if needed.",
+  });
+
+  rt.blocks = next;
+  rebuildBlockIndex(rt);
+  rt.uiHydrationBlockedText =
+    keepPairs > 0
+      ? `Context was compacted. To reduce memory usage, the UI history was trimmed (keeping the last ${keepPairs} exchanges).\nClick 'Load history' to re-hydrate.`
+      : "Context was compacted. To reduce memory usage, the UI history was trimmed.\nClick 'Load history' to re-hydrate.";
+}
+
 function ensureParts(parts: string[], index: number): void {
   while (parts.length <= index) parts.push("");
 }
@@ -7606,15 +8010,15 @@ function applyGlobalNotification(
         const mins = p.windowDurationMins ?? null;
         const label = mins ? rateLimitShortLabelFromMinutes(mins) : "primary";
         parts.push(`${label}:${formatPercent2(p.usedPercent)}%`);
-        const reset = p.resetsAt ? formatResetsAtTooltip(p.resetsAt) : "不明";
-        tooltipLines.push(`${label} リセット: ${reset}`);
+        const reset = p.resetsAt ? formatResetsAtTooltip(p.resetsAt) : "unknown";
+        tooltipLines.push(`${label} reset: ${reset}`);
       }
       if (s) {
         const mins = s.windowDurationMins ?? null;
         const label = mins ? rateLimitShortLabelFromMinutes(mins) : "secondary";
         parts.push(`${label}:${formatPercent2(s.usedPercent)}%`);
-        const reset = s.resetsAt ? formatResetsAtTooltip(s.resetsAt) : "不明";
-        tooltipLines.push(`${label} リセット: ${reset}`);
+        const reset = s.resetsAt ? formatResetsAtTooltip(s.resetsAt) : "unknown";
+        tooltipLines.push(`${label} reset: ${reset}`);
       }
       globalRateLimitStatusText = parts.length > 0 ? parts.join(" ") : null;
       globalRateLimitStatusTooltip =

@@ -4,7 +4,31 @@
 
 ## Unreleased
 
-_No changes._
+- **Sessions / Tree**
+  - backend（`codez (N)` 等）のグルーピング行を廃止し、各セッション行に `backendId` と `threadId` を同一行で表示
+- **Sessions / Chat Tabs**
+  - Reload 後など履歴未ロードのセッションで、CHAT タブをクリックしたときに履歴ロード（`Load history` 相当）を実行するよう改善
+- **Collaboration Mode**
+  - Windows での誤爆を避けるため、`Ctrl+Shift` によるモード切替を廃止し、入力欄での `Shift+Tab` 切替のみ対応に変更
+- **Steer Mode**
+  - 実行中ターンでも `Enter` 送信を許可し、`Tab` で次メッセージをキュー投入して完了後に自動送信する挙動を追加
+- **Performance**
+  - セッション選択時に `refreshCustomPromptsFromDisk` が二重実行される経路を解消し、再読み込み時の待ち時間を削減
+- **Images**
+  - 画像キャッシュの prune が最新画像を先に削除して `ENOENT` になり得る問題を修正（古い画像から削除）
+- **Streaming**
+  - assistant のストリーミング delta と `item/completed` の到着順が前後した場合に、末尾が二重に表示され得る問題を修正
+- **Memory**
+  - `codez.ui.clearHistoryOnCompact` を追加。compact後にUI履歴をクリアしてメモリ使用量を抑え、必要なら `Load history` で再hydrationできるようにする
+  - compact後に残す往復数を `codez.ui.clearHistoryOnCompactKeepPairs` で指定（デフォルト 10）
+- **UI**
+  - UI上の日本語メッセージを英語へ統一（toasts / banners / blocks / quick pick 等）
+- **Errors**
+  - `turn` が `Failed` で完了した場合、エラーメッセージをチャット内のエラーカードとして表示（「何も起きない」ように見えるケースを低減）
+  - `error` 通知をチャット内のエラーカードとして表示
+- **OpenCode / Stability**
+  - opencode サーバー起動失敗時に `inFlight` 状態が残って再試行不能になる問題を修正（失敗後に再起動できるように）
+  - `request_user_input` 待機中に Webview が破棄された場合、待機を `cancelled` で解放してターンが停止し続ける問題を修正
 
 ## 0.2.9
 

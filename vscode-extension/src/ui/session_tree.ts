@@ -43,19 +43,6 @@ export class SessionTreeDataProvider
       return item;
     }
 
-    if (element.kind === "backend") {
-      const item = new vscode.TreeItem(
-        element.label,
-        vscode.TreeItemCollapsibleState.Expanded,
-      );
-      if (element.workspaceFolderUri) {
-        const idx = this.getWorkspaceColorIndex(element.workspaceFolderUri);
-        item.iconPath = iconForColorIndex(this.extensionUri, idx);
-      }
-      item.contextValue = "codez.backend";
-      return item;
-    }
-
     const title = normalizeTitle(element.session.title);
     const label = element.session.customTitle
       ? title
@@ -66,8 +53,8 @@ export class SessionTreeDataProvider
     );
     const idx = this.getWorkspaceColorIndex(element.session.workspaceFolderUri);
     item.iconPath = iconForColorIndex(this.extensionUri, idx);
-    // Show full thread id in description for copyability; omit short id in label.
-    item.description = element.session.threadId;
+    // Put backend + thread id in the same line to avoid an extra backend group row.
+    item.description = `${element.session.backendId} ${element.session.threadId}`;
     item.contextValue = "codez.session";
     item.command = {
       command: "codez.openSession",
@@ -102,30 +89,17 @@ export class SessionTreeDataProvider
         const list = byBackendId.get(s.backendId) ?? [];
         byBackendId.set(s.backendId, [...list, s]);
       }
-      const nodes: BackendNode[] = [...byBackendId.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([backendId, group]) => ({
-          kind: "backend",
-          backendId,
-          workspaceFolderUri: element.workspaceFolderUri,
-          label: `${backendId} (${group.length})`,
-        }));
+      const nodes: SessionNode[] = [];
+      for (const backendId of [...byBackendId.keys()].sort((a, b) =>
+        a.localeCompare(b),
+      )) {
+        const group = byBackendId.get(backendId);
+        if (!group) continue;
+        group.forEach((s, idx) => {
+          nodes.push({ kind: "session", session: s, index: idx + 1 });
+        });
+      }
       return Promise.resolve(nodes);
-    }
-
-    if (element.kind === "backend") {
-      const sessions = this.listAllSessions().filter(
-        (s) =>
-          s.workspaceFolderUri === element.workspaceFolderUri &&
-          s.backendId === element.backendId,
-      );
-      return Promise.resolve(
-        sessions.map((s, idx) => ({
-          kind: "session",
-          session: s,
-          index: idx + 1,
-        })),
-      );
     }
 
     return Promise.resolve([]);
@@ -137,14 +111,8 @@ type FolderNode = {
   label: string;
   workspaceFolderUri: string | null;
 };
-type BackendNode = {
-  kind: "backend";
-  backendId: BackendId;
-  label: string;
-  workspaceFolderUri: string | null;
-};
 type SessionNode = { kind: "session"; session: Session; index: number };
-type TreeNode = FolderNode | BackendNode | SessionNode;
+type TreeNode = FolderNode | SessionNode;
 
 function formatThreadId(threadId: string): string {
   const trimmed = threadId.trim();

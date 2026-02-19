@@ -175,8 +175,34 @@ fn cargo_bin_via_workspace_build(name: &str) -> Result<PathBuf, CargoBinError> {
         name: name.to_owned(),
     })?;
 
+    // Avoid invoking `cargo build` from within a running test when the binary is
+    // already present, since that can deadlock on Cargo's artifact locks.
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
+    let mut path = target_dir.join(&profile).join(name);
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+    if path.exists() {
+        return Ok(path);
+    }
+
+    // If we must build, isolate the target dir to avoid lock contention with an
+    // outer `cargo test` that is already using `target/`.
+    let fallback_target_dir = target_dir.join("cargo-bin-fallback");
     let build_output = Command::new("cargo")
-        .args(["build", "-p", &package, "--bin", name])
+        .args([
+            "build",
+            "-p",
+            &package,
+            "--bin",
+            name,
+            "--target-dir",
+            fallback_target_dir
+                .to_str()
+                .ok_or_else(|| CargoBinError::CurrentDir {
+                    source: io::Error::other("fallback target dir is not valid UTF-8"),
+                })?,
+        ])
         .current_dir(&codex_rs_root)
         .output()
         .map_err(|source| CargoBinError::CargoMetadata { source })?;
@@ -189,8 +215,10 @@ fn cargo_bin_via_workspace_build(name: &str) -> Result<PathBuf, CargoBinError> {
         });
     }
 
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".to_owned());
-    let mut path = target_dir.join(profile).join(name);
+    let mut path = target_dir
+        .join("cargo-bin-fallback")
+        .join(profile)
+        .join(name);
     if cfg!(windows) {
         path.set_extension("exe");
     }

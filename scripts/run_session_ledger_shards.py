@@ -32,6 +32,8 @@ def _fmt(d: dt.date) -> str:
 def _split_into_shards(since: dt.date, until: dt.date, num_shards: int) -> list[Shard]:
     if until < since:
         raise ValueError("until must be >= since")
+    if num_shards <= 0:
+        raise ValueError("workers must be >= 1")
     total_days = (until - since).days + 1
     step = max(1, total_days // num_shards)
 
@@ -115,6 +117,8 @@ def main() -> int:
 
     since = _parse_date(args.since)
     until = _parse_date(args.until)
+    if args.workers < 1:
+        raise ValueError("workers must be >= 1")
     shards = _split_into_shards(since, until, args.workers)
 
     for shard in shards:

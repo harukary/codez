@@ -44,6 +44,57 @@ install:
 test:
     cargo nextest run --no-fail-fast
 
+# Run the full core integration suite directly.
+test-core-all *args:
+    cargo test -p codex-core --test all "$@"
+
+# Fast path for codez daily development:
+# skip A group tests that codez rarely touches.
+test-core-codez-fast-a *args:
+    cargo test -p codex-core --test all \
+      -- \
+      --skip suite::agent_websocket:: \
+      --skip suite::client_websockets:: \
+      --skip suite::websocket_fallback:: \
+      --skip suite::rmcp_client:: \
+      --skip suite::tool_harness:: \
+      --skip suite::view_image:: \
+      --skip suite::image_rollout:: \
+      --skip suite::web_search:: \
+      --skip suite::search_tool:: \
+      --skip suite::live_cli:: \
+      --skip suite::live_reload:: \
+      "$@"
+
+# Faster path for codez local iteration:
+# skip both A and B groups.
+test-core-codez-fast *args:
+    cargo test -p codex-core --test all \
+      -- \
+      --skip suite::agent_websocket:: \
+      --skip suite::client_websockets:: \
+      --skip suite::websocket_fallback:: \
+      --skip suite::rmcp_client:: \
+      --skip suite::tool_harness:: \
+      --skip suite::view_image:: \
+      --skip suite::image_rollout:: \
+      --skip suite::web_search:: \
+      --skip suite::search_tool:: \
+      --skip suite::live_cli:: \
+      --skip suite::live_reload:: \
+      --skip suite::apply_patch_cli:: \
+      --skip suite::shell_serialization:: \
+      --skip suite::unified_exec:: \
+      --skip suite::shell_snapshot:: \
+      --skip suite::seatbelt:: \
+      --skip suite::compact:: \
+      --skip suite::compact_remote:: \
+      --skip suite::compact_resume_fork:: \
+      --skip suite::prompt_caching:: \
+      --skip suite::resume:: \
+      --skip suite::review:: \
+      "$@"
+
 # Build and run Codex from source using Bazel.
 # Note we have to use the combination of `[no-cd]` and `--run_under="cd $PWD &&"`
 # to ensure that Bazel runs the command in the current working directory.

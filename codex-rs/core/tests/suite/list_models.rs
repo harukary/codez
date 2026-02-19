@@ -59,6 +59,7 @@ fn sorted_models(models: &[codex_protocol::openai_models::ModelPreset]) -> Vec<S
 fn sorted_expected_models_for_api_key() -> Vec<String> {
     let mut slugs: Vec<String> = vec![
         "gpt-5.3-codex",
+        "gpt-5.3-codex-spark",
         "gpt-5.2-codex",
         "gpt-5.2",
         "gpt-5.1-codex-max",

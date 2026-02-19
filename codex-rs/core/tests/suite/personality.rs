@@ -47,7 +47,7 @@ async fn personality_does_not_mutate_base_instructions_without_template() {
     config.features.enable(Feature::Personality);
     config.personality = Some(Personality::Friendly);
 
-    let model_info = ModelsManager::construct_model_info_offline("gpt-5.1", &config);
+    let model_info = codex_core::test_support::construct_model_info_offline("gpt-5.1", &config);
     assert_eq!(
         model_info.get_model_instructions(config.personality),
         model_info.base_instructions
@@ -62,7 +62,8 @@ async fn base_instructions_override_disables_personality_template() {
     config.personality = Some(Personality::Friendly);
     config.base_instructions = Some("override instructions".to_string());
 
-    let model_info = ModelsManager::construct_model_info_offline("gpt-5.3-codex", &config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline("gpt-5.2-codex", &config);
 
     assert_eq!(model_info.base_instructions, "override instructions");
     assert_eq!(
@@ -78,7 +79,7 @@ async fn user_turn_personality_none_does_not_add_update_message() -> anyhow::Res
     let server = start_mock_server().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
     let mut builder = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
@@ -94,7 +95,7 @@ async fn user_turn_personality_none_does_not_add_update_message() -> anyhow::Res
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -124,7 +125,7 @@ async fn config_personality_some_sets_instructions_template() -> anyhow::Result<
     let server = start_mock_server().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
     let mut builder = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
@@ -141,7 +142,7 @@ async fn config_personality_some_sets_instructions_template() -> anyhow::Result<
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -178,7 +179,7 @@ async fn config_personality_none_sends_no_personality() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
     let mut builder = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
@@ -195,7 +196,7 @@ async fn config_personality_none_sends_no_personality() -> anyhow::Result<()> {
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -239,7 +240,7 @@ async fn default_personality_is_pragmatic_without_config_toml() -> anyhow::Resul
     let server = start_mock_server().await;
     let resp_mock = mount_sse_once(&server, sse_completed("resp-1")).await;
     let mut builder = test_codex()
-        .with_model("gpt-5.3-codex")
+        .with_model("gpt-5.2-codex")
         .with_config(|config| {
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
@@ -255,7 +256,7 @@ async fn default_personality_is_pragmatic_without_config_toml() -> anyhow::Resul
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -303,7 +304,7 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -337,7 +338,7 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -400,7 +401,7 @@ async fn user_turn_personality_same_value_does_not_add_update_message() -> anyho
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -434,7 +435,7 @@ async fn user_turn_personality_same_value_does_not_add_update_message() -> anyho
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -470,7 +471,8 @@ async fn instructions_uses_base_if_feature_disabled() -> anyhow::Result<()> {
     config.features.disable(Feature::Personality);
     config.personality = Some(Personality::Friendly);
 
-    let model_info = ModelsManager::construct_model_info_offline("gpt-5.3-codex", &config);
+    let model_info =
+        codex_core::test_support::construct_model_info_offline("gpt-5.2-codex", &config);
     assert_eq!(
         model_info.get_model_instructions(config.personality),
         model_info.base_instructions
@@ -506,7 +508,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -540,7 +542,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: test.config.approval_policy.value(),
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: test.session_configured.model.clone(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -577,7 +579,7 @@ async fn ignores_remote_personality_if_remote_models_disabled() -> anyhow::Resul
         .start()
         .await;
 
-    let remote_slug = "gpt-5.3-codex";
+    let remote_slug = "gpt-5.2-codex";
     let remote_personality_message = "Friendly from remote template";
     let remote_model = ModelInfo {
         slug: remote_slug.to_string(),
@@ -613,6 +615,7 @@ async fn ignores_remote_personality_if_remote_models_disabled() -> anyhow::Resul
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
+        prefer_websockets: false,
     };
 
     let _models_mock = mount_models_once(
@@ -651,7 +654,7 @@ async fn ignores_remote_personality_if_remote_models_disabled() -> anyhow::Resul
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: remote_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -729,6 +732,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
+        prefer_websockets: false,
     };
 
     let _models_mock = mount_models_once(
@@ -767,7 +771,7 @@ async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: remote_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -840,6 +844,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
         input_modalities: default_input_modalities(),
+        prefer_websockets: false,
     };
 
     let _models_mock = mount_models_once(
@@ -861,7 +866,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         .with_config(|config| {
             config.features.enable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
-            config.model = Some("gpt-5.3-codex".to_string());
+            config.model = Some("gpt-5.2-codex".to_string());
         });
     let test = builder.build(&server).await?;
 
@@ -881,7 +886,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: remote_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
@@ -915,7 +920,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             final_output_json_schema: None,
             cwd: test.cwd_path().to_path_buf(),
             approval_policy: AskForApproval::Never,
-            sandbox_policy: SandboxPolicy::ReadOnly,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
             model: remote_slug.to_string(),
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,

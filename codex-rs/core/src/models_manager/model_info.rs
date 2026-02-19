@@ -71,6 +71,7 @@ macro_rules! model_info {
             apply_patch_tool_type: None,
             truncation_policy: TruncationPolicyConfig::bytes(10_000),
             supports_parallel_tool_calls: false,
+            prefer_websockets: false,
             context_window: Some(CONTEXT_WINDOW_272K),
             auto_compact_token_limit: None,
             effective_context_window_percent: 95,
@@ -120,7 +121,7 @@ pub(crate) fn with_config_overrides(mut model: ModelInfo, config: &Config) -> Mo
 }
 
 // todo(aibrahim): remove most of the entries here when enabling models.json
-pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
+pub(crate) fn model_info_from_slug(slug: &str) -> ModelInfo {
     if slug.starts_with("o3") || slug.starts_with("o4-mini") {
         model_info!(
             slug,

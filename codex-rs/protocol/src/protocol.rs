@@ -763,8 +763,8 @@ impl SandboxPolicy {
                             subpaths.push(top_level_git);
                         }
 
-                        // Make .agents/skills and .codex/config.toml and
-                        // related files read-only to the agent, by default.
+                        // Make .agents and .codex and related files read-only to the agent, by
+                        // default.
                         for subdir in &[".agents", ".codex"] {
                             #[allow(clippy::expect_used)]
                             let top_level_codex =

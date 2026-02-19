@@ -13,6 +13,7 @@ set -eu
 #   CODEZ_ROOT          (default: ~/.local/codez)
 #   CODEZ_BIN_DIR       (default: ~/.local/bin)
 #   CODEZ_UPDATE_PATH   (default: 0) If 1, append PATH export to your shell rc file when needed.
+#   CODEZ_ALLOW_UNVERIFIED (default: 0) If 1, skip checksum verification failures.
 
 repo="${CODEZ_GITHUB_REPO:-harukary/codez}"
 version="${CODEZ_VERSION:-latest}"
@@ -20,6 +21,7 @@ version="${CODEZ_VERSION:-latest}"
 install_root="${CODEZ_ROOT:-$HOME/.local/codez}"
 bin_dir="${CODEZ_BIN_DIR:-$HOME/.local/bin}"
 update_path="${CODEZ_UPDATE_PATH:-0}"
+allow_unverified="${CODEZ_ALLOW_UNVERIFIED:-0}"
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -81,14 +83,22 @@ sha256_verify() {
   file_name="$3"
 
   if [ ! -f "$sums_path" ]; then
-    printf 'WARN: checksums file not found, skipping verification: %s\n' "$sums_path" >&2
-    return 0
+    printf 'ERROR: checksums file not found: %s\n' "$sums_path" >&2
+    if [ "$allow_unverified" = "1" ]; then
+      printf 'WARN: CODEZ_ALLOW_UNVERIFIED=1 is set; continuing without verification\n' >&2
+      return 0
+    fi
+    exit 1
   fi
 
   expected="$(grep -E "  ${file_name}\$" "$sums_path" | awk '{print $1}' | head -n 1 || true)"
   if [ -z "$expected" ]; then
-    printf 'WARN: no checksum entry for %s; skipping verification\n' "$file_name" >&2
-    return 0
+    printf 'ERROR: no checksum entry for %s\n' "$file_name" >&2
+    if [ "$allow_unverified" = "1" ]; then
+      printf 'WARN: CODEZ_ALLOW_UNVERIFIED=1 is set; continuing without verification\n' >&2
+      return 0
+    fi
+    exit 1
   fi
 
   if command -v sha256sum >/dev/null 2>&1; then
@@ -96,8 +106,12 @@ sha256_verify() {
   elif command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$file_path" | awk '{print $1}')"
   else
-    printf 'WARN: sha256sum/shasum not found; skipping verification\n' >&2
-    return 0
+    printf 'ERROR: sha256sum/shasum not found\n' >&2
+    if [ "$allow_unverified" = "1" ]; then
+      printf 'WARN: CODEZ_ALLOW_UNVERIFIED=1 is set; continuing without verification\n' >&2
+      return 0
+    fi
+    exit 1
   fi
 
   if [ "$actual" != "$expected" ]; then
@@ -121,7 +135,12 @@ printf '==> Downloading %s\n' "$checksums" >&2
 if curl -fsSL -o "$tmp/$checksums" "$(download_url "$checksums")"; then
   sha256_verify "$tmp/$asset" "$tmp/$checksums" "$asset"
 else
-  printf 'WARN: failed to download checksums.txt; continuing without verification\n' >&2
+  printf 'ERROR: failed to download checksums.txt\n' >&2
+  if [ "$allow_unverified" = "1" ]; then
+    printf 'WARN: CODEZ_ALLOW_UNVERIFIED=1 is set; continuing without verification\n' >&2
+  else
+    exit 1
+  fi
 fi
 
 mkdir -p "$install_root/bin" "$bin_dir"

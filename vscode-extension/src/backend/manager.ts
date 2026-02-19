@@ -3396,9 +3396,10 @@ export class BackendManager implements vscode.Disposable {
       });
 
       this.opencodeServer = server;
-      this.opencodeServerInFlight = null;
       return server;
-    })();
+    })().finally(() => {
+      this.opencodeServerInFlight = null;
+    });
 
     this.opencodeServerInFlight = start;
     return await start;
