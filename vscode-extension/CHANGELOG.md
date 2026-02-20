@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- (no changes yet)
+
+## 0.2.10
+
 - **Sessions / Tree**
   - backend（`codez (N)` 等）のグルーピング行を廃止し、各セッション行に `backendId` と `threadId` を同一行で表示
 - **Sessions / Chat Tabs**
@@ -26,6 +30,7 @@
   - compact後に残す往復数を `codez.ui.clearHistoryOnCompactKeepPairs` で指定（デフォルト 10）
 - **UI**
   - UI上の日本語メッセージを英語へ統一（toasts / banners / blocks / quick pick 等）
+  - codez/codex セッションでもチャットブロックを描画順に再配置し、Turn 表示順がばらつくことがある問題を修正
 - **Errors**
   - `turn` が `Failed` で完了した場合、エラーメッセージをチャット内のエラーカードとして表示（「何も起きない」ように見えるケースを低減）
   - `error` 通知をチャット内のエラーカードとして表示

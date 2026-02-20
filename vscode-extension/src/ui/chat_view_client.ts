@@ -4552,9 +4552,7 @@ function main(): void {
         : raw;
     })();
 
-    const opencodeReorder = s.activeSession?.backendId === "opencode";
     const cursorStart = (() => {
-      if (!opencodeReorder) return null;
       let cur: ChildNode | null = logEl.firstChild;
       while (cur) {
         const el = cur as HTMLElement;
@@ -4569,8 +4567,9 @@ function main(): void {
     })();
     let cursor: ChildNode | null = cursorStart;
     const placeTopLevel = (el: HTMLElement): void => {
-      if (!opencodeReorder) return;
-      // Reorder DOM to match the (potentially reordered) blocks list.
+      // Reorder DOM to match the current blocks list.
+      // This keeps Turn numbering and visual order stable even when block updates
+      // arrive out of order.
       if (el.parentElement !== logEl || el !== cursor) {
         logEl.insertBefore(el, cursor);
       }
