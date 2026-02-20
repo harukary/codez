@@ -400,34 +400,63 @@ fn create_auth_storage_with_keyring_store(
     account_name: Option<String>,
     keyring_store: Arc<dyn KeyringStore>,
 ) -> Arc<dyn AuthStorageBackend> {
+    if let Some(account_name) = account_name.as_deref()
+        && let Err(err) = crate::accounts::validate_account_name(account_name)
+    {
+        warn!(
+            "invalid account name `{account_name}` for auth storage: {err}; using ephemeral storage"
+        );
+        return Arc::new(EphemeralAuthStorage::new(codex_home));
+    }
+
     match mode {
         AuthCredentialsStoreMode::File => match account_name {
-            Some(account_name) =>
-            {
-                #[expect(clippy::unwrap_used)]
-                Arc::new(FileAuthStorage::new_for_account(codex_home, account_name).unwrap())
+            Some(account_name) => {
+                match FileAuthStorage::new_for_account(codex_home.clone(), account_name) {
+                    Ok(storage) => Arc::new(storage),
+                    Err(err) => {
+                        warn!(
+                            "failed to initialize account-scoped file auth storage: {err}; using ephemeral storage"
+                        );
+                        Arc::new(EphemeralAuthStorage::new(codex_home))
+                    }
+                }
             }
             None => Arc::new(FileAuthStorage::new(codex_home)),
         },
         AuthCredentialsStoreMode::Keyring => match account_name {
-            Some(account_name) =>
-            {
-                #[expect(clippy::unwrap_used)]
-                Arc::new(
-                    KeyringAuthStorage::new_for_account(codex_home, account_name, keyring_store)
-                        .unwrap(),
-                )
+            Some(account_name) => {
+                match KeyringAuthStorage::new_for_account(
+                    codex_home.clone(),
+                    account_name,
+                    keyring_store,
+                ) {
+                    Ok(storage) => Arc::new(storage),
+                    Err(err) => {
+                        warn!(
+                            "failed to initialize account-scoped keyring auth storage: {err}; using ephemeral storage"
+                        );
+                        Arc::new(EphemeralAuthStorage::new(codex_home))
+                    }
+                }
             }
             None => Arc::new(KeyringAuthStorage::new(codex_home, keyring_store)),
         },
         AuthCredentialsStoreMode::Auto => match account_name {
-            Some(account_name) =>
-            {
-                #[expect(clippy::unwrap_used)]
-                Arc::new(
-                    AutoAuthStorage::new_for_account(codex_home, account_name, keyring_store)
-                        .unwrap(),
-                )
+            Some(account_name) => {
+                match AutoAuthStorage::new_for_account(
+                    codex_home.clone(),
+                    account_name,
+                    keyring_store,
+                ) {
+                    Ok(storage) => Arc::new(storage),
+                    Err(err) => {
+                        warn!(
+                            "failed to initialize account-scoped auto auth storage: {err}; using ephemeral storage"
+                        );
+                        Arc::new(EphemeralAuthStorage::new(codex_home))
+                    }
+                }
             }
             None => Arc::new(AutoAuthStorage::new(codex_home, keyring_store)),
         },

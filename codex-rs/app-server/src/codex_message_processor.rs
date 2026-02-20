@@ -3096,7 +3096,6 @@ impl CodexMessageProcessor {
         };
 
         let history_cwd = thread_history.session_cwd();
-        let allow_empty_rollout_fallback = matches!(&thread_history, InitialHistory::Resumed(resumed) if resumed.history.is_empty());
         if let InitialHistory::Resumed(resumed_history) = &thread_history {
             let Some(parent_dir) = resumed_history.rollout_path.parent() else {
                 self.send_invalid_request_error(
@@ -3269,30 +3268,6 @@ impl CodexMessageProcessor {
                         )
                         .await
                     }
-                    Err(err)
-                        if err.kind() == std::io::ErrorKind::InvalidData
-                            && allow_empty_rollout_fallback =>
-                    {
-                        let Ok(resumed_thread) = self.thread_manager.get_thread(thread_id).await
-                        else {
-                            self.send_internal_error(
-                                request_id,
-                                format!(
-                                    "failed to load rollout `{}` for thread {thread_id}: {err}",
-                                    rollout_path.display()
-                                ),
-                            )
-                            .await;
-                            return;
-                        };
-                        let config_snapshot = resumed_thread.config_snapshot().await;
-                        build_thread_from_snapshot(
-                            thread_id,
-                            &config_snapshot,
-                            Some(rollout_path.clone()),
-                        )
-                        .await
-                    }
                     Err(err) => {
                         self.send_internal_error(
                             request_id,
@@ -3310,9 +3285,6 @@ impl CodexMessageProcessor {
                         thread.turns = build_turns_from_rollout_items(&items);
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err)
-                        if err.kind() == std::io::ErrorKind::InvalidData
-                            && allow_empty_rollout_fallback => {}
                     Err(err) => {
                         self.send_internal_error(
                             request_id,
