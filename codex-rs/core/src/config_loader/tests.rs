@@ -362,6 +362,82 @@ args = ["-y", "@mobilenext/mobile-mcp@latest"]
     );
 }
 
+#[tokio::test]
+async fn cwd_local_config_prevents_notify_and_hooks_merge_from_codex_home() {
+    let tmp = tempdir().expect("tempdir");
+
+    let codex_home = tmp.path().join("home");
+    std::fs::create_dir_all(&codex_home).expect("create codex_home");
+    std::fs::write(
+        codex_home.join(CONFIG_TOML_FILE),
+        r#"
+notify = ["echo", "home"]
+
+[[hooks]]
+when = "turn.end"
+command = ["echo", "home-hook"]
+"#,
+    )
+    .expect("write CODEX_HOME config");
+
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(cwd.join(".codex")).expect("create project .codex");
+    std::fs::write(
+        cwd.join(".codex").join(CONFIG_TOML_FILE),
+        r#"
+notify = ["echo", "cwd"]
+
+[[hooks]]
+when = "turn.begin"
+command = ["echo", "cwd-hook"]
+"#,
+    )
+    .expect("write cwd-local config");
+
+    let layers = load_config_layers_state(
+        &codex_home,
+        Some(AbsolutePathBuf::try_from(cwd.as_path()).expect("cwd")),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+        CloudRequirementsLoader::default(),
+    )
+    .await
+    .expect("load layers");
+
+    assert_eq!(
+        layers.get_user_layer(),
+        None,
+        "expected no user layer when cwd/.codex/config.toml exists"
+    );
+
+    let merged = layers.effective_config();
+    let table = merged.as_table().expect("top-level table expected");
+    assert_eq!(
+        table.get("notify"),
+        Some(&TomlValue::Array(vec![
+            TomlValue::String("echo".to_string()),
+            TomlValue::String("cwd".to_string()),
+        ])),
+        "expected notify from cwd-local config only"
+    );
+
+    let hooks = table
+        .get("hooks")
+        .and_then(TomlValue::as_array)
+        .expect("hooks");
+    assert_eq!(
+        hooks.len(),
+        1,
+        "expected only one hook from cwd-local config"
+    );
+    let hook = hooks[0].as_table().expect("hook table");
+    let hook_when = hook
+        .get("when")
+        .and_then(TomlValue::as_str)
+        .expect("hook when");
+    assert_eq!(hook_when, "turn.begin");
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn managed_preferences_take_highest_precedence() {

@@ -323,11 +323,69 @@ fn try_lock_dir(dir: &Path) -> std::io::Result<Option<File>> {
 
 #[cfg(test)]
 mod tests {
+    use super::ILLEGAL_ENV_VAR_PREFIX;
     use super::LOCK_FILENAME;
     use super::janitor_cleanup;
+    use super::load_dotenv;
+    use std::env;
     use std::fs;
     use std::fs::File;
     use std::path::Path;
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn env_lock() -> &'static Mutex<()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: String,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn new(key: &str) -> Self {
+            Self {
+                key: key.to_string(),
+                prev: env::var(key).ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.prev.as_deref() {
+                Some(value) => {
+                    // SAFETY: tests in this module hold ENV_LOCK while mutating env.
+                    unsafe { env::set_var(&self.key, value) }
+                }
+                None => {
+                    // SAFETY: tests in this module hold ENV_LOCK while mutating env.
+                    unsafe { env::remove_var(&self.key) }
+                }
+            }
+        }
+    }
+
+    struct CwdGuard {
+        prev: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn new() -> std::io::Result<Self> {
+            Ok(Self {
+                prev: env::current_dir()?,
+            })
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.prev);
+        }
+    }
 
     fn create_lock(dir: &Path) -> std::io::Result<File> {
         let lock_path = dir.join(LOCK_FILENAME);
@@ -375,6 +433,68 @@ mod tests {
         janitor_cleanup(root.path())?;
 
         assert!(!dir.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn load_dotenv_prefers_cwd_codex_env_over_codex_home_env() -> std::io::Result<()> {
+        let _lock = env_lock().lock().expect("lock env");
+        let root = tempfile::tempdir()?;
+        let codex_home = root.path().join("home");
+        let cwd = root.path().join("cwd");
+        fs::create_dir_all(codex_home.as_path())?;
+        fs::create_dir_all(cwd.join(".codex"))?;
+
+        fs::write(codex_home.join(".env"), "TEST_ENV_ORIGIN=home\n")?;
+        fs::write(cwd.join(".codex").join(".env"), "TEST_ENV_ORIGIN=cwd\n")?;
+
+        let _codex_home_guard = EnvVarGuard::new("CODEX_HOME");
+        let _origin_guard = EnvVarGuard::new("TEST_ENV_ORIGIN");
+        let _cwd_guard = CwdGuard::new()?;
+
+        // SAFETY: tests in this module hold ENV_LOCK while mutating env.
+        unsafe {
+            env::set_var("CODEX_HOME", codex_home.as_os_str());
+            env::remove_var("TEST_ENV_ORIGIN");
+        }
+        env::set_current_dir(cwd)?;
+
+        load_dotenv();
+
+        assert_eq!(env::var("TEST_ENV_ORIGIN").ok().as_deref(), Some("cwd"));
+        Ok(())
+    }
+
+    #[test]
+    fn load_dotenv_filters_codex_prefixed_keys() -> std::io::Result<()> {
+        let _lock = env_lock().lock().expect("lock env");
+        let root = tempfile::tempdir()?;
+        let codex_home = root.path().join("home");
+        fs::create_dir_all(codex_home.as_path())?;
+        fs::write(
+            codex_home.join(".env"),
+            "SAFE_KEY=ok\nCODEX_FORBIDDEN=1\ncodex_lower=1\n",
+        )?;
+
+        let _codex_home_guard = EnvVarGuard::new("CODEX_HOME");
+        let _safe_guard = EnvVarGuard::new("SAFE_KEY");
+        let _forbidden_guard = EnvVarGuard::new("CODEX_FORBIDDEN");
+        let _lower_guard = EnvVarGuard::new("codex_lower");
+
+        // SAFETY: tests in this module hold ENV_LOCK while mutating env.
+        unsafe {
+            env::set_var("CODEX_HOME", codex_home.as_os_str());
+            env::remove_var("SAFE_KEY");
+            env::remove_var("CODEX_FORBIDDEN");
+            env::remove_var("codex_lower");
+        }
+
+        load_dotenv();
+
+        assert_eq!(env::var("SAFE_KEY").ok().as_deref(), Some("ok"));
+        assert_eq!(env::var("CODEX_FORBIDDEN").ok().as_deref(), None);
+        assert_eq!(env::var("codex_lower").ok().as_deref(), None);
+        assert_eq!(ILLEGAL_ENV_VAR_PREFIX, "CODEX_");
         Ok(())
     }
 }
