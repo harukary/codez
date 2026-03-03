@@ -14,7 +14,7 @@ ignore_default_excludes = false
 inherit = "all"
 
 ## MCP
-[mcp_servers.chrome-devtools]
-args = ["chrome-devtools-mcp@latest"]
-command = "npx"
-env = { DISPLAY = ":99" }
+# [mcp_servers.chrome-devtools]
+# args = ["chrome-devtools-mcp@latest"]
+# command = "npx"
+# env = { DISPLAY = ":99" }
